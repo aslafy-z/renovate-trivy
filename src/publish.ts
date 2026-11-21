@@ -107,6 +107,13 @@ export function applyDelta(delta: string, root: string, repository: string, maxA
   writeFileSync(join(dst, "rules.json"), `${JSON.stringify({ packageRules: rules }, null, 2)}\n`);
   writeFileSync(join(dst, "state.json"), `${JSON.stringify(state, null, 2)}\n`);
   writeFileSync(join(dst, "report.md"), report);
+  // The summary becomes part of a Handlebars template in the shared preset.
+  rmSync(join(dst, "summary.md"), { force: true });
+  if (existsSync(join(src, "summary.md"))) {
+    const summary = readRegular(join(src, "summary.md"), 20_000).toString("utf8");
+    if (/[{}]/.test(summary)) throw new Error("summary.md: braces are not allowed");
+    writeFileSync(join(dst, "summary.md"), summary);
+  }
 
   let added = 0;
   const from = join(delta, "sboms");
@@ -151,8 +158,14 @@ function find(dir: string, name: string): string[] {
 export function assemble(root: string, webUrl?: string): { repos: string[]; pruned: number } {
   const repos = find(join(root, "repos"), "rules.json");
   const fragments = repos.map((f) => (JSON.parse(readFileSync(f, "utf8")).packageRules ?? []) as PackageRule[]);
+  const summaries = new Map<string, string>();
+  for (const f of repos) {
+    const summary = join(f, "..", "summary.md");
+    const name = relative(join(root, "repos"), f).replace(/\/rules\.json$/, "");
+    if (REPOSITORY_RE.test(name) && existsSync(summary)) summaries.set(name, readFileSync(summary, "utf8"));
+  }
   const template = webUrl ? `${webUrl}/repos/{{{repository}}}/report.md` : undefined;
-  writeFileSync(join(root, PRESET_FILE), `${JSON.stringify(buildPreset(fragments, template), null, 2)}\n`);
+  writeFileSync(join(root, PRESET_FILE), `${JSON.stringify(buildPreset(fragments, template, summaries), null, 2)}\n`);
 
   // An SBOM no repository references any more is of an image nobody runs.
   const used = new Set<string>();

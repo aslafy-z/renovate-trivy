@@ -21,6 +21,45 @@ function cveLines(cves: Cve[], limit = CVES_PER_IMAGE): string[] {
   return lines;
 }
 
+/**
+ * Compact version of the report for Renovate's Dependency Dashboard header.
+ * The header is a Handlebars template, so braces are written as entities.
+ */
+export function renderSummary(a: Analysis, meta: ScanMeta, reportUrl?: string, maxRows = 15): string {
+  const total = (k: "CRITICAL" | "HIGH") => a.images.reduce((n, i) => n + i.counts[k], 0);
+  const exposed = a.images
+    .filter((i) => i.counts.CRITICAL || i.counts.HIGH)
+    .sort((x, y) => y.counts.CRITICAL - x.counts.CRITICAL || y.counts.HIGH - x.counts.HIGH || x.name.localeCompare(y.name));
+  const fixing = a.updates.filter((u) => u.diff.fixedGate).sort((x, y) => y.diff.fixedGate - x.diff.fixedGate);
+  const more = (n: number) => (n > maxRows ? [`| … ${n - maxRows} more in the full report | | | | |`] : []);
+  const out = [
+    "## 🛡️ Container image CVEs (Trivy)",
+    "",
+    `**${a.images.length}** images scanned · **${total("CRITICAL")}** critical · **${total("HIGH")}** high · ` +
+      `**${fixing.length}** pending updates fix some` + (reportUrl ? ` · [full report](${reportUrl})` : ""),
+  ];
+  if (fixing.length) {
+    out.push("", "| Update that fixes CVEs | Version | Critical / High | Fixed | Branch |", "|---|---|---|---|---|");
+    for (const u of fixing.slice(0, maxRows)) {
+      out.push(`| \`${u.fromName}\` | \`${versionOf(u.from)}\` → \`${versionOf(u.ref)}\` | ${ch(u.fromCounts)} → ${ch(u.toCounts)} | ${u.diff.fixedGate} | ${u.branchName ? `\`${u.branchName}\`` : ""} |`);
+    }
+    out.push(...more(fixing.length));
+  }
+  if (exposed.length) {
+    out.push("", `<details><summary>${exposed.length} images with critical/high CVEs</summary>`, "",
+      "| Image | Version | Critical | High | Best update |", "|---|---|---|---|---|");
+    for (const i of exposed.slice(0, maxRows)) {
+      const best = a.updates.filter((u) => u.from === i.ref).sort((x, y) => y.diff.fixedGate - x.diff.fixedGate)[0];
+      const upd = !best ? "—" : best.diff.fixedGate ? `\`${versionOf(best.ref)}\` (−${best.diff.fixedGate})` : `\`${versionOf(best.ref)}\` (fixes none)`;
+      out.push(`| \`${i.name}\` | \`${versionOf(i.ref)}\`${i.scan.eosl ? " ⚠️ EOL OS" : ""} | ${i.counts.CRITICAL} | ${i.counts.HIGH} | ${upd} |`);
+    }
+    out.push(...more(exposed.length), "", "</details>");
+  }
+  if (a.errors.length) out.push("", `⚠️ ${a.errors.length} image references could not be scanned.`);
+  out.push("", `<sub>Trivy ${meta.trivyVersion} · scanned ${meta.scannedAt.slice(0, 16).replace("T", " ")} UTC</sub>`);
+  return out.join("\n").replace(/[{}]/g, (c) => `&#${c.charCodeAt(0)};`);
+}
+
 export function renderReport(a: Analysis, meta: ScanMeta): string {
   const total = (k: "CRITICAL" | "HIGH") => a.images.reduce((n, i) => n + i.counts[k], 0);
   const exposed = a.images

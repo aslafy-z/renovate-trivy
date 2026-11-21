@@ -190,7 +190,10 @@ scan's own lookup cannot resolve `local>`, so prefer the explicit form).
   body with the CVE diff. Only the schedule is lifted: `minimumReleaseAge`,
   PR limits and Dependency Dashboard approval still apply. Updates that *introduce* critical/high
   CVEs get a warning note and nothing else.
-- **In the Dependency Dashboard**: a link to the repository's report.
+- **In the Dependency Dashboard**: a CVE summary at the top of the issue
+  (totals, the pending updates that fix CVEs, the most exposed images),
+  written by Renovate itself from the preset. `--no-dashboard-report` keeps
+  it out.
 - **In the data repository**: `repos/<repo>/report.md`, with every image
   ranked by critical/high count, its best available update, the CVE list, and
   anything that could not be scanned.

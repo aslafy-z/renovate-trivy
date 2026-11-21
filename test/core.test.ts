@@ -248,4 +248,8 @@ test("assemble merges every repository's rules and prunes unreferenced SBOMs", (
   const preset = JSON.parse(readFileSync(join(root, PRESET_FILE), "utf8"));
   assert.equal(preset.packageRules.length, 2);
   assert.match(preset.dependencyDashboardHeader, /blob\/main\/repos\/\{\{\{repository\}\}\}\/report\.md/);
+  // With a summary, the header holds one block per repository instead.
+  writeFileSync(join(root, "repos/o/a/summary.md"), "## CVEs of A");
+  assemble(root, "https://host/o/data/blob/main");
+  assert.equal(JSON.parse(readFileSync(join(root, PRESET_FILE), "utf8")).dependencyDashboardHeader, '{{#if (equals (lowercase repository) "o/a")}}## CVEs of A{{/if}}');
 });

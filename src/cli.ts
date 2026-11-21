@@ -7,7 +7,7 @@ import { analyse } from "./analyse.ts";
 import { carryForward, matchKey, rulesFor, type PackageRule } from "./preset.ts";
 import { publish } from "./publish.ts";
 import { lookup } from "./renovate.ts";
-import { renderReport } from "./report.ts";
+import { renderReport, renderSummary } from "./report.ts";
 import { scanAll } from "./scan.ts";
 import { SbomStore } from "./store.ts";
 import { targetsFromReport } from "./targets.ts";
@@ -35,6 +35,7 @@ scan options:
   --label <name>            label for PRs that fix critical/high CVEs (default: security)
   --pr-priority <n>         prPriority for those PRs (default: 10)
   --no-release              keep fixing updates on the repository's schedule
+  --no-dashboard-report     do not put the CVE summary in the Dependency Dashboard
   --sbom-max-age <days>     regenerate SBOMs older than this (default: 30)
   --concurrency <n>         parallel scans (default: 4)
   --renovate-version <v>    Renovate npm version for the lookup (default: ${DEFAULT_RENOVATE_VERSION})
@@ -100,6 +101,7 @@ async function scan(v: Record<string, any>): Promise<string> {
     }
     writeFileSync(join(dir, "rules.json"), `${JSON.stringify({ packageRules: rules }, null, 2)}\n`);
     writeFileSync(join(dir, "report.md"), renderReport(analysis, meta));
+    if (!v["no-dashboard-report"]) writeFileSync(join(dir, "summary.md"), renderSummary(analysis, meta, reportUrl));
     writeFileSync(join(dir, "state.json"), `${JSON.stringify({ ...meta, sboms }, null, 2)}\n`);
     const fixing = analysis.updates.filter((u) => u.diff.fixedGate).length;
     log(`${targets.repository}: ${fixing} updates fix critical/high CVEs, ${rules.length} rules, ${analysis.errors.length} references not scanned`);
@@ -133,7 +135,7 @@ const { values, positionals } = parseArgs({
     "repo-dir": { type: "string" }, repository: { type: "string" }, out: { type: "string" },
     "data-dir": { type: "string" }, "web-url": { type: "string" }, platform: { type: "string" },
     "skip-registry": { type: "string", multiple: true }, label: { type: "string" },
-    "pr-priority": { type: "string" }, "no-release": { type: "boolean" }, "sbom-max-age": { type: "string" },
+    "pr-priority": { type: "string" }, "no-release": { type: "boolean" }, "no-dashboard-report": { type: "boolean" }, "sbom-max-age": { type: "string" },
     concurrency: { type: "string" }, "renovate-version": { type: "string" }, "renovate-bin": { type: "string" },
     "renovate-report": { type: "string" }, trivy: { type: "string" },
     delta: { type: "string" }, remote: { type: "string" }, branch: { type: "string" },
