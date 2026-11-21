@@ -1,0 +1,17 @@
+{
+  "name": "renovate-trivy",
+  "version": "0.1.0",
+  "description": "Trivy companion for Renovate: container image CVEs fed back into Renovate through a generated preset",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "bin": { "renovate-trivy": "src/cli.ts" },
+  "scripts": {
+    "test": "node --test 'test/*.test.ts'",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3"
+  }
+}

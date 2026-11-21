@@ -1,0 +1,4 @@
+# Trivy comes from the aqua registry: mise verifies the release checksums and
+# their cosign signature. Renovate holds new releases for a week (renovate.json).
+[tools]
+trivy = "0.76.2"

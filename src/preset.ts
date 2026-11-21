@@ -1,0 +1,113 @@
+/**
+ * Generate Renovate package rules from the analysis. This is the only channel
+ * back to Renovate: it reads the preset on its next run and does the rest
+ * itself (opens the PR, labels it, writes the note in the PR body).
+ */
+import { versionOf } from "./refs.ts";
+import { sevRank } from "./analyse.ts";
+import type { AnalysedUpdate, Analysis, Cve } from "./types.ts";
+
+export interface PresetOptions {
+  label: string;
+  prPriority: number;
+  /** Release fixing updates (and the rest of their branch) from the schedule. */
+  release: boolean;
+  /** Web URL of the repo's report, linked from PR notes. */
+  reportUrl?: string;
+}
+
+export type PackageRule = Record<string, unknown>;
+
+/** Exact-match pattern for Renovate's regex-or-glob matchers. */
+export function exact(value: string): string {
+  return `/^${value.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}$/`;
+}
+
+/** Handlebars would try to evaluate "{{" in a note. */
+const safe = (s: string) => s.replace(/\{\{/g, "{ {").replace(/\}\}/g, "} }").replace(/\|/g, "\\|").replace(/\s+/g, " ");
+
+function matcher(repository: string, u: AnalysedUpdate): PackageRule | undefined {
+  // A replacement renames the package; matching it reliably is not worth it.
+  if (u.name !== u.fromName) return undefined;
+  const rule: PackageRule = {
+    matchRepositories: [repository],
+    matchDatasources: ["docker"],
+    matchPackageNames: [u.fromName],
+  };
+  if (u.currentValue) rule.matchCurrentValue = exact(u.currentValue);
+  if (u.newValue) rule.matchNewValue = exact(u.newValue);
+  if (u.newDigest) rule.matchJsonata = [`newDigest = "${u.newDigest}"`];
+  if (!u.newValue && !u.newDigest) return undefined;
+  return rule;
+}
+
+function cveList(cves: Cve[], max = 5): string {
+  const sorted = [...cves].sort((a, b) => sevRank(a.severity) - sevRank(b.severity) || a.id.localeCompare(b.id));
+  const shown = sorted.slice(0, max).map((c) => (c.url ? `[${c.id}](${c.url})` : c.id));
+  return shown.join(", ") + (sorted.length > max ? ` and ${sorted.length - max} more` : "");
+}
+
+const split = (cves: Cve[]) => ({
+  critical: cves.filter((c) => c.severity === "CRITICAL").length,
+  high: cves.filter((c) => c.severity === "HIGH").length,
+});
+
+export function note(u: AnalysedUpdate, reportUrl?: string): string {
+  const gate = (l: Cve[]) => l.filter((c) => c.severity === "CRITICAL" || c.severity === "HIGH");
+  const fixed = gate(u.diff.fixed);
+  const introduced = gate(u.diff.introduced);
+  const parts: string[] = [];
+  if (fixed.length) {
+    const n = split(fixed);
+    parts.push(`fixes **${n.critical} critical** and **${n.high} high** CVEs (${cveList(fixed)})`);
+  }
+  if (introduced.length) {
+    const n = split(introduced);
+    parts.push(`${fixed.length ? "" : "⚠️ "}introduces **${n.critical} critical** and **${n.high} high** CVEs (${cveList(introduced)})`);
+  }
+  const after = `${u.toCounts.CRITICAL} critical / ${u.toCounts.HIGH} high remain`;
+  const link = reportUrl ? ` · [full report](${reportUrl})` : "";
+  return safe(
+    `🛡️ **Trivy**: \`${u.fromName}\` \`${versionOf(u.from)}\` → \`${versionOf(u.ref)}\` ${parts.join("; ")}. ${after}${link}`,
+  );
+}
+
+export function rulesFor(analysis: Analysis, opts: PresetOptions): PackageRule[] {
+  const rules: PackageRule[] = [];
+  const fixing = analysis.updates.filter((u) => u.diff.fixedGate > 0);
+  const fixingBranches = new Set(fixing.map((u) => u.branchName).filter(Boolean));
+  for (const u of analysis.updates) {
+    const match = matcher(analysis.repository, u);
+    if (!match) continue;
+    const fixes = u.diff.fixedGate > 0;
+    const worsens = u.diff.introducedGate > 0;
+    // Renovate takes a branch's schedule from the first update in it, so
+    // every member of a fixing update's branch has to be released with it.
+    const released = opts.release && (fixes || (u.branchName !== undefined && fixingBranches.has(u.branchName)));
+    if (!fixes && !worsens && !released) continue;
+    rules.push({
+      description: fixes
+        ? `renovate-trivy: ${u.fromName} ${versionOf(u.from)} -> ${versionOf(u.ref)} fixes ${u.diff.fixedGate} critical/high CVEs`
+        : worsens
+          ? `renovate-trivy: ${u.fromName} ${versionOf(u.from)} -> ${versionOf(u.ref)} introduces ${u.diff.introducedGate} critical/high CVEs`
+          : `renovate-trivy: ${u.fromName} shares a branch with a security fix`,
+      ...match,
+      ...(released ? { schedule: ["at any time"] } : {}),
+      ...(fixes ? { addLabels: [opts.label], prPriority: opts.prPriority } : {}),
+      ...(fixes || worsens ? { prBodyNotes: [note(u, opts.reportUrl)] } : {}),
+    });
+  }
+  return rules;
+}
+
+/** The preset Renovate extends: every repository's rules, each scoped by matchRepositories. */
+export function buildPreset(fragments: PackageRule[][], reportUrlTemplate?: string): Record<string, unknown> {
+  return {
+    $schema: "https://docs.renovatebot.com/renovate-schema.json",
+    description: ["Generated by renovate-trivy: container image CVE findings. Do not edit, it is overwritten."],
+    ...(reportUrlTemplate
+      ? { dependencyDashboardHeader: `🛡️ Container image CVEs (Trivy): [report for this repository](${reportUrlTemplate})` }
+      : {}),
+    packageRules: fragments.flat(),
+  };
+}

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^src/cli\\.ts$/"],
+      "matchStrings": ["// renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n[^\\n]*\"(?<currentValue>[^\"]+)\""]
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Trivy's release channel was hijacked in March 2026 (CVE-2026-33634); let a bad release be pulled before it lands here",
+      "matchPackageNames": ["trivy", "aquasecurity/trivy", "renovate"],
+      "minimumReleaseAge": "7 days",
+      "automerge": false
+    }
+  ]
+}

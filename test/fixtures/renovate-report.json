@@ -1,0 +1,279 @@
+{
+  "repositories": {
+    "local": {
+      "packageFiles": {
+        "helm-values": [
+          {
+            "packageFile": "k8s/oauth2-proxy-values.yaml",
+            "deps": [
+              {
+                "datasource": "docker",
+                "depType": null,
+                "depName": "nginx",
+                "packageName": "nginx",
+                "currentValue": "1-alpine",
+                "currentDigest": null,
+                "skipReason": null,
+                "updates": []
+              }
+            ]
+          },
+          {
+            "packageFile": "k8s/values.yaml",
+            "deps": [
+              {
+                "datasource": "docker",
+                "depType": null,
+                "depName": "quay.io/argoproj/argocd",
+                "packageName": "quay.io/argoproj/argocd",
+                "currentValue": "v3.6.1",
+                "currentDigest": null,
+                "skipReason": null,
+                "updates": [
+                  {
+                    "updateType": "patch",
+                    "newValue": "v3.6.2",
+                    "newDigest": null,
+                    "branchName": "renovate/argocd-suite"
+                  }
+                ]
+              },
+              {
+                "datasource": "docker",
+                "depType": null,
+                "depName": "quay.io/argoproj/argocd",
+                "packageName": "quay.io/argoproj/argocd",
+                "currentValue": "v3.6.1",
+                "currentDigest": null,
+                "skipReason": null,
+                "updates": [
+                  {
+                    "updateType": "patch",
+                    "newValue": "v3.6.2",
+                    "newDigest": null,
+                    "branchName": "renovate/argocd-suite"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "packageFile": "k8s/values.yaml",
+            "deps": [
+              {
+                "datasource": "docker",
+                "depType": null,
+                "depName": "docker.io/valkey/valkey",
+                "packageName": "docker.io/valkey/valkey",
+                "currentValue": "9.2-alpine",
+                "currentDigest": "sha256:cdcb7b1c7b6f1c9cb9442c71ac6275e78184657448407b2c1fdde7ee8024f4fb",
+                "skipReason": null,
+                "updates": [
+                  {
+                    "updateType": "digest",
+                    "newValue": "9.2-alpine",
+                    "newDigest": "sha256:c8e2d17498838af5d91e12eb7c11220b3434a7b7131a333e3af52ad5e0b80882",
+                    "branchName": "renovate/valkey-suite"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "packageFile": "k8s/values.yaml",
+            "deps": [
+              {
+                "datasource": "docker",
+                "depType": null,
+                "depName": "n8nio/n8n",
+                "packageName": "n8nio/n8n",
+                "currentValue": "3.2.2",
+                "currentDigest": null,
+                "skipReason": null,
+                "updates": [
+                  {
+                    "updateType": "minor",
+                    "newValue": "3.3.0",
+                    "newDigest": null,
+                    "branchName": "renovate/n8n"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "packageFile": "k8s/oauth2-proxy-values.yaml",
+            "deps": [
+              {
+                "datasource": "docker",
+                "depType": null,
+                "depName": "haproxy",
+                "packageName": "haproxy",
+                "currentValue": "3.4.7-alpine",
+                "currentDigest": null,
+                "skipReason": null,
+                "updates": [
+                  {
+                    "updateType": "patch",
+                    "newValue": "3.4.8-alpine",
+                    "newDigest": null,
+                    "branchName": "renovate/all-patch"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "kubernetes": [
+          {
+            "packageFile": "k8s/deployment.yaml",
+            "deps": [
+              {
+                "datasource": "docker",
+                "depType": null,
+                "depName": "rajnandan1/kener",
+                "packageName": "rajnandan1/kener",
+                "currentValue": "4.2.1",
+                "currentDigest": null,
+                "skipReason": null,
+                "updates": [
+                  {
+                    "updateType": "patch",
+                    "newValue": "v4.2.2",
+                    "newDigest": null,
+                    "branchName": "renovate/all-patch"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "packageFile": "k8s/valkey-deployment.yaml",
+            "deps": [
+              {
+                "datasource": "docker",
+                "depType": null,
+                "depName": "docker.io/valkey/valkey",
+                "packageName": "docker.io/valkey/valkey",
+                "currentValue": "9.2-alpine",
+                "currentDigest": null,
+                "skipReason": null,
+                "updates": []
+              }
+            ]
+          },
+          {
+            "packageFile": "k8s/deployment.yaml",
+            "deps": [
+              {
+                "datasource": "docker",
+                "depType": null,
+                "depName": "lscr.io/linuxserver/prowlarr",
+                "packageName": "lscr.io/linuxserver/prowlarr",
+                "currentValue": "2.7.0",
+                "currentDigest": null,
+                "skipReason": null,
+                "updates": [
+                  {
+                    "updateType": "major",
+                    "newValue": "3.0.2",
+                    "newDigest": null,
+                    "branchName": "renovate/lsio-arr"
+                  }
+                ]
+              },
+              {
+                "datasource": "docker",
+                "depType": null,
+                "depName": "lscr.io/linuxserver/prowlarr",
+                "packageName": "lscr.io/linuxserver/prowlarr",
+                "currentValue": "2.7.0",
+                "currentDigest": null,
+                "skipReason": null,
+                "updates": [
+                  {
+                    "updateType": "major",
+                    "newValue": "3.0.2",
+                    "newDigest": null,
+                    "branchName": "renovate/lsio-arr"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "packageFile": "k8s/deployment.yaml",
+            "deps": [
+              {
+                "datasource": "docker",
+                "depType": null,
+                "depName": "valkey/valkey",
+                "packageName": "valkey/valkey",
+                "currentValue": "9.1.3-alpine",
+                "currentDigest": null,
+                "skipReason": null,
+                "updates": [
+                  {
+                    "updateType": "minor",
+                    "newValue": "9.2.0-alpine",
+                    "newDigest": null,
+                    "branchName": "renovate/valkey-suite"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "packageFile": "k8s/valkey.yaml",
+            "deps": [
+              {
+                "datasource": "docker",
+                "depType": null,
+                "depName": "docker.io/valkey/valkey",
+                "packageName": "docker.io/valkey/valkey",
+                "currentValue": "9.2-alpine",
+                "currentDigest": null,
+                "skipReason": null,
+                "updates": []
+              }
+            ]
+          }
+        ],
+        "kustomize": [
+          {
+            "packageFile": "k8s/kustomization.yaml",
+            "deps": [
+              {
+                "datasource": "helm",
+                "depType": "HelmChart",
+                "depName": "n8n",
+                "packageName": "n8n",
+                "currentValue": "1.15.2",
+                "currentDigest": null,
+                "skipReason": null,
+                "updates": []
+              }
+            ]
+          }
+        ],
+        "mise": [
+          {
+            "packageFile": ".mise.toml",
+            "deps": [
+              {
+                "datasource": "github-releases",
+                "depType": "tools",
+                "depName": "argocd",
+                "packageName": "argoproj/argo-cd",
+                "currentValue": "3.6.1",
+                "currentDigest": null,
+                "skipReason": "github-token-required",
+                "updates": []
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}
