@@ -3,9 +3,9 @@
  * back to Renovate: it reads the preset on its next run and does the rest
  * itself (opens the PR, labels it, writes the note in the PR body).
  */
-import { versionOf } from "./refs.ts";
+import { DIGEST_RE, versionOf } from "./refs.ts";
 import { sevRank } from "./analyse.ts";
-import type { AnalysedUpdate, Analysis, Cve } from "./types.ts";
+import type { AnalysedUpdate, Analysis, BranchUpdate, Cve } from "./types.ts";
 
 export interface PresetOptions {
   label: string;
@@ -23,27 +23,38 @@ export function exact(value: string): string {
   return `/^${value.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}$/`;
 }
 
-/** Handlebars would try to evaluate "{{" in a note. */
-const safe = (s: string) => s.replace(/\{\{/g, "{ {").replace(/\}\}/g, "} }").replace(/\|/g, "\\|").replace(/\s+/g, " ");
+/**
+ * Text from image metadata (CVE ids, package names) ends up in a Handlebars
+ * template rendered into a PR body: neutralise braces, table pipes and
+ * Markdown link syntax.
+ */
+const text = (s: string) =>
+  s.replace(/[{}]/g, (c) => `&#${c.charCodeAt(0)};`).replace(/[|[\]()<>`]/g, "").replace(/\s+/g, " ");
+const link = (label: string, url: string) =>
+  /^https:\/\/[\w.-]+\/[\w./?=&%#~+-]*$/.test(url) ? `[${text(label)}](${url})` : text(label);
 
-function matcher(repository: string, u: AnalysedUpdate): PackageRule | undefined {
-  // A replacement renames the package; matching it reliably is not worth it.
-  if (u.name !== u.fromName) return undefined;
-  const rule: PackageRule = {
-    matchRepositories: [repository],
-    matchDatasources: ["docker"],
-    matchPackageNames: [u.fromName],
-  };
-  if (u.currentValue) rule.matchCurrentValue = exact(u.currentValue);
-  if (u.newValue) rule.matchNewValue = exact(u.newValue);
-  if (u.newDigest) rule.matchJsonata = [`newDigest = "${u.newDigest}"`];
+function matcher(repository: string, u: Pick<BranchUpdate, "datasource" | "name" | "currentValue" | "newValue" | "newDigest">): PackageRule | undefined {
   if (!u.newValue && !u.newDigest) return undefined;
-  return rule;
+  if (u.newDigest && !DIGEST_RE.test(u.newDigest)) return undefined;
+  return {
+    matchRepositories: [repository],
+    matchDatasources: [u.datasource],
+    matchPackageNames: [u.name],
+    ...(u.currentValue ? { matchCurrentValue: exact(u.currentValue) } : {}),
+    ...(u.newValue ? { matchNewValue: exact(u.newValue) } : {}),
+    ...(u.newDigest ? { matchJsonata: [`newDigest = "${u.newDigest}"`] } : {}),
+  };
+}
+
+/** Identity of a rule's match part: the same update yields the same key across runs. */
+export function matchKey(rule: PackageRule): string {
+  return JSON.stringify([rule.matchDatasources, rule.matchPackageNames, rule.matchCurrentValue, rule.matchNewValue, rule.matchJsonata]);
 }
 
 function cveList(cves: Cve[], max = 5): string {
   const sorted = [...cves].sort((a, b) => sevRank(a.severity) - sevRank(b.severity) || a.id.localeCompare(b.id));
-  const shown = sorted.slice(0, max).map((c) => (c.url ? `[${c.id}](${c.url})` : c.id));
+  // Advisory ids are plain tokens (CVE-…, GHSA-…); anything else is dropped.
+  const shown = sorted.slice(0, max).map((c) => link(c.id.replace(/[^\w.-]/g, ""), c.url));
   return shown.join(", ") + (sorted.length > max ? ` and ${sorted.length - max} more` : "");
 }
 
@@ -66,38 +77,71 @@ export function note(u: AnalysedUpdate, reportUrl?: string): string {
     parts.push(`${fixed.length ? "" : "⚠️ "}introduces **${n.critical} critical** and **${n.high} high** CVEs (${cveList(introduced)})`);
   }
   const after = `${u.toCounts.CRITICAL} critical / ${u.toCounts.HIGH} high remain`;
-  const link = reportUrl ? ` · [full report](${reportUrl})` : "";
-  return safe(
-    `🛡️ **Trivy**: \`${u.fromName}\` \`${versionOf(u.from)}\` → \`${versionOf(u.ref)}\` ${parts.join("; ")}. ${after}${link}`,
-  );
+  const report = reportUrl ? ` · ${link("full report", reportUrl)}` : "";
+  const name = (s: string) => `\`${text(s)}\``;
+  return `🛡️ **Trivy**: ${name(u.fromName)} ${name(versionOf(u.from))} → ${name(versionOf(u.ref))} ${parts.join("; ")}. ${after}${report}`;
 }
 
 export function rulesFor(analysis: Analysis, opts: PresetOptions): PackageRule[] {
   const rules: PackageRule[] = [];
-  const fixing = analysis.updates.filter((u) => u.diff.fixedGate > 0);
-  const fixingBranches = new Set(fixing.map((u) => u.branchName).filter(Boolean));
+  const seen = new Set<string>();
+  const fixingBranches = new Set<string>();
   for (const u of analysis.updates) {
-    const match = matcher(analysis.repository, u);
+    // A replacement renames the package; matching it reliably is not worth it.
+    if (u.name !== u.fromName) continue;
+    const match = matcher(analysis.repository, { datasource: "docker", name: u.fromName, currentValue: u.currentValue, newValue: u.newValue, newDigest: u.newDigest });
     if (!match) continue;
     const fixes = u.diff.fixedGate > 0;
     const worsens = u.diff.introducedGate > 0;
-    // Renovate takes a branch's schedule from the first update in it, so
-    // every member of a fixing update's branch has to be released with it.
-    const released = opts.release && (fixes || (u.branchName !== undefined && fixingBranches.has(u.branchName)));
-    if (!fixes && !worsens && !released) continue;
+    if (!fixes && !worsens) continue;
+    if (fixes && u.branchName) fixingBranches.add(u.branchName);
+    const what = `${u.fromName} ${versionOf(u.from)} -> ${versionOf(u.ref)}`;
     rules.push({
       description: fixes
-        ? `renovate-trivy: ${u.fromName} ${versionOf(u.from)} -> ${versionOf(u.ref)} fixes ${u.diff.fixedGate} critical/high CVEs`
-        : worsens
-          ? `renovate-trivy: ${u.fromName} ${versionOf(u.from)} -> ${versionOf(u.ref)} introduces ${u.diff.introducedGate} critical/high CVEs`
-          : `renovate-trivy: ${u.fromName} shares a branch with a security fix`,
+        ? `renovate-trivy: ${what} fixes ${u.diff.fixedGate} critical/high CVEs`
+        : `renovate-trivy: ${what} introduces ${u.diff.introducedGate} critical/high CVEs`,
       ...match,
-      ...(released ? { schedule: ["at any time"] } : {}),
-      ...(fixes ? { addLabels: [opts.label], prPriority: opts.prPriority } : {}),
-      ...(fixes || worsens ? { prBodyNotes: [note(u, opts.reportUrl)] } : {}),
+      ...(fixes && opts.release ? { schedule: ["at any time"], prPriority: opts.prPriority } : {}),
+      ...(fixes ? { addLabels: [opts.label] } : {}),
+      prBodyNotes: [note(u, opts.reportUrl)],
     });
+    if (fixes) seen.add(matchKey(match));
+  }
+  if (opts.release) {
+    // Renovate takes a branch's schedule and priority from whichever update
+    // sorts first in it, so every member of a fixing update's branch is
+    // released with it, whatever its datasource and whether or not it was scanned.
+    for (const b of analysis.branchUpdates) {
+      if (!fixingBranches.has(b.branchName)) continue;
+      const match = matcher(analysis.repository, b);
+      if (!match || seen.has(matchKey(match))) continue;
+      seen.add(matchKey(match));
+      rules.push({
+        description: `renovate-trivy: ${b.name} shares a branch with a security fix`,
+        ...match,
+        schedule: ["at any time"],
+        prPriority: opts.prPriority,
+      });
+    }
   }
   return rules;
+}
+
+/**
+ * Rules of the previous run for updates that could not be scanned this time:
+ * one registry hiccup should not drop a label and re-schedule a PR.
+ */
+export function carryForward(previous: PackageRule[], analysis: Analysis, targets: { images: { name: string; currentValue?: string; ref: string; updates: { ref: string; newValue?: string; newDigest?: string }[] }[] }): PackageRule[] {
+  const failed = new Set(analysis.errors.map((e) => e.ref));
+  const keys = new Set<string>();
+  for (const image of targets.images) {
+    for (const u of image.updates) {
+      if (!failed.has(image.ref) && !failed.has(u.ref)) continue;
+      const m = matcher(analysis.repository, { datasource: "docker", name: image.name, currentValue: image.currentValue, newValue: u.newValue, newDigest: u.newDigest });
+      if (m) keys.add(matchKey(m));
+    }
+  }
+  return previous.filter((r) => keys.has(matchKey(r)));
 }
 
 /** The preset Renovate extends: every repository's rules, each scoped by matchRepositories. */

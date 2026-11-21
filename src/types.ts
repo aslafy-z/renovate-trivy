@@ -23,9 +23,20 @@ export interface Image {
   skipped?: boolean;
 }
 
+/** Any update Renovate proposes, whatever its datasource: used to release whole branches. */
+export interface BranchUpdate {
+  datasource: string;
+  name: string;
+  currentValue?: string;
+  newValue?: string;
+  newDigest?: string;
+  branchName: string;
+}
+
 export interface RepoTargets {
   repository: string;
   images: Image[];
+  branchUpdates: BranchUpdate[];
 }
 
 /** One finding, as Trivy reports it (one per package). */
@@ -86,6 +97,7 @@ export interface Analysis {
   updates: AnalysedUpdate[];
   errors: { ref: string; error: string }[];
   skipped: string[];
+  branchUpdates: BranchUpdate[];
 }
 
 export interface ScanMeta {

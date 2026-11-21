@@ -66,10 +66,10 @@ async function scanOne(ref: string, n: number, o: ScanOptions): Promise<Scan & {
   }
 }
 
-export async function scanAll(refs: string[], o: ScanOptions): Promise<{ scans: Map<string, Scan>; keys: Set<string> }> {
+export async function scanAll(refs: string[], o: ScanOptions): Promise<{ scans: Map<string, Scan>; keys: Map<string, string> }> {
   mkdirSync(o.workDir, { recursive: true });
   const scans = new Map<string, Scan>();
-  const keys = new Set<string>();
+  const keys = new Map<string, string>();
   let next = 0;
   let done = 0;
   const worker = async () => {
@@ -78,7 +78,7 @@ export async function scanAll(refs: string[], o: ScanOptions): Promise<{ scans: 
       const ref = refs[n];
       const t0 = Date.now();
       const res = await scanOne(ref, n, o);
-      if (res.key) keys.add(res.key);
+      if (res.key) keys.set(ref, res.key);
       scans.set(ref, res);
       const status = res.ok ? (res.cached ? "archived SBOM" : "pulled") : `ERROR ${res.error}`;
       o.log(`[${++done}/${refs.length}] ${ref} (${Math.round((Date.now() - t0) / 1000)}s) ${status}`);

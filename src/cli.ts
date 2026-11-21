@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { analyse } from "./analyse.ts";
-import { rulesFor } from "./preset.ts";
+import { carryForward, matchKey, rulesFor, type PackageRule } from "./preset.ts";
 import { publish } from "./publish.ts";
 import { lookup } from "./renovate.ts";
 import { renderReport } from "./report.ts";
@@ -43,6 +44,7 @@ scan options:
 
 publish options:
   --delta <dir>             delta to publish (default: .renovate-trivy/delta)
+  --repository <owner/name> the repository the delta is for; it can only write that entry
   --remote <url>            git URL of the data repository (required)
   --branch <name>           branch to publish to (default: main)
   --web-url <url>           as above; links reports from the Dependency Dashboard
@@ -54,11 +56,10 @@ const log = (msg: string) => console.error(msg);
 async function scan(v: Record<string, any>): Promise<string> {
   const repoDir = resolve(v["repo-dir"] ?? ".");
   const out = resolve(v.out ?? ".renovate-trivy/delta");
-  const work = resolve(".renovate-trivy/work");
+  const work = mkdtempSync(join(process.env.RUNNER_TEMP ?? tmpdir(), "renovate-trivy-work-"));
   const repository = v.repository ?? process.env.GITHUB_REPOSITORY ?? process.env.CI_PROJECT_PATH;
   if (!repository) throw new Error("--repository is required (or GITHUB_REPOSITORY / CI_PROJECT_PATH)");
   rmSync(out, { recursive: true, force: true });
-  mkdirSync(work, { recursive: true });
 
   const report = v["renovate-report"]
     ? JSON.parse(readFileSync(v["renovate-report"], "utf8"))
@@ -87,20 +88,35 @@ async function scan(v: Record<string, any>): Promise<string> {
     const rules = rulesFor(analysis, {
       label: v.label ?? "security", prPriority: Number(v["pr-priority"] ?? 10), release: !v["no-release"], reportUrl,
     });
+    // References that failed this time keep what the previous run knew about them.
+    const sboms: Record<string, string> = Object.fromEntries(keys);
+    const previous = v["data-dir"] ? join(resolve(v["data-dir"]), "repos", targets.repository) : undefined;
+    if (previous && analysis.errors.length && existsSync(join(previous, "rules.json"))) {
+      const have = new Set(rules.map(matchKey));
+      const old = JSON.parse(readFileSync(join(previous, "rules.json"), "utf8")).packageRules as PackageRule[];
+      rules.push(...carryForward(old, analysis, targets).filter((r) => !have.has(matchKey(r))));
+      const oldSboms = JSON.parse(readFileSync(join(previous, "state.json"), "utf8")).sboms ?? {};
+      for (const e of analysis.errors) if (typeof oldSboms[e.ref] === "string") sboms[e.ref] = oldSboms[e.ref];
+    }
     writeFileSync(join(dir, "rules.json"), `${JSON.stringify({ packageRules: rules }, null, 2)}\n`);
     writeFileSync(join(dir, "report.md"), renderReport(analysis, meta));
-    writeFileSync(join(dir, "state.json"), `${JSON.stringify({ ...meta, sboms: [...keys].sort() }, null, 2)}\n`);
+    writeFileSync(join(dir, "state.json"), `${JSON.stringify({ ...meta, sboms }, null, 2)}\n`);
     const fixing = analysis.updates.filter((u) => u.diff.fixedGate).length;
     log(`${targets.repository}: ${fixing} updates fix critical/high CVEs, ${rules.length} rules, ${analysis.errors.length} references not scanned`);
     if (process.env.GITHUB_STEP_SUMMARY) writeFileSync(process.env.GITHUB_STEP_SUMMARY, renderReport(analysis, meta), { flag: "a" });
   }
+  rmSync(work, { recursive: true, force: true });
   log(`delta written to ${out}${failed ? ` (${failed} references failed)` : ""}`);
   return out;
 }
 
-function doPublish(v: Record<string, any>, delta?: string): void {
+async function doPublish(v: Record<string, any>, delta?: string): Promise<void> {
   if (!v.remote) throw new Error("--remote is required");
-  publish({
+  const repository = v.repository ?? process.env.GITHUB_REPOSITORY ?? process.env.CI_PROJECT_PATH;
+  if (!repository) throw new Error("--repository is required (or GITHUB_REPOSITORY / CI_PROJECT_PATH)");
+  await publish({
+    repository,
+    sbomMaxAgeDays: Number(v["sbom-max-age"] ?? 30),
     delta: resolve(delta ?? v.delta ?? ".renovate-trivy/delta"),
     remote: v.remote,
     branch: v.branch ?? "main",
@@ -128,8 +144,8 @@ try {
   const cmd = positionals[0];
   if (values.help || !cmd) console.log(HELP);
   else if (cmd === "scan") await scan(values);
-  else if (cmd === "publish") doPublish(values);
-  else if (cmd === "run") doPublish(values, await scan(values));
+  else if (cmd === "publish") await doPublish(values);
+  else if (cmd === "run") await doPublish(values, await scan(values));
   else throw new Error(`unknown command: ${cmd}\n\n${HELP}`);
 } catch (err) {
   console.error(`renovate-trivy: ${(err as Error).message}`);

@@ -1,6 +1,6 @@
 /** Renovate report -> images in use and the updates Renovate proposes for them. */
 import { makeRef, registryOf } from "./refs.ts";
-import type { Image, RepoTargets } from "./types.ts";
+import type { BranchUpdate, Image, RepoTargets } from "./types.ts";
 
 // Update types that do not change what runs.
 const SKIP_UPDATE_TYPES = new Set(["pin", "pinDigest", "rollback", "lockfileUpdate", "lockFileMaintenance"]);
@@ -50,9 +50,18 @@ export function targetsFromReport(report: RenovateReport, opts: TargetOptions = 
   for (const [key, repo] of Object.entries(report.repositories ?? {})) {
     const repository = key === "local" ? (opts.localRepository ?? "local") : key;
     const images = new Map<string, Image>();
+    const branchUpdates: BranchUpdate[] = [];
     for (const files of Object.values(repo.packageFiles ?? {})) {
       for (const pf of files) {
         for (const dep of pf.deps ?? []) {
+          const depName = dep.packageName ?? dep.depName;
+          for (const upd of dep.updates ?? []) {
+            if (!depName || !dep.datasource || !upd.branchName || upd.newName) continue;
+            branchUpdates.push({
+              datasource: dep.datasource, name: depName, currentValue: dep.currentValue,
+              newValue: upd.newValue, newDigest: upd.newDigest, branchName: upd.branchName,
+            });
+          }
           // OCI Helm charts use the docker datasource too.
           if (dep.datasource !== "docker" || dep.depType === "HelmChart") continue;
           const cur = depRef(dep);
@@ -89,7 +98,7 @@ export function targetsFromReport(report: RenovateReport, opts: TargetOptions = 
         }
       }
     }
-    out.push({ repository, images: [...images.values()].sort((a, b) => a.ref.localeCompare(b.ref)) });
+    out.push({ repository, images: [...images.values()].sort((a, b) => a.ref.localeCompare(b.ref)), branchUpdates });
   }
   return out;
 }

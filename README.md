@@ -78,8 +78,9 @@ wherever Renovate does and cannot conflict with it.
 
 ## Quick start (GitHub)
 
-You need a **data repository** (public, or readable by your Renovate) and a
-token that can push to it.
+You need a **public data repository** and a token that can push to it. (It
+holds package inventories and CVE lists of your images. A private one is not
+supported yet: the scan job and Renovate both read it anonymously.)
 
 1. Create an empty repository, e.g. `acme/renovate-trivy-data`.
 2. Create a fine-grained personal access token with **Contents: read and
@@ -113,6 +114,7 @@ token that can push to it.
            with:
              name: delta
              path: ${{ runner.temp }}/renovate-trivy-delta
+             include-hidden-files: true
      publish:                    # git only; holds the write token
        needs: scan
        runs-on: ubuntu-latest
@@ -152,8 +154,14 @@ all of them and every rule is scoped with `matchRepositories`, so one `extends`
 line (in an organisation preset, or in a self-hosted bot's global config)
 serves them all. An image used by ten repositories is pulled once.
 
-Concurrent runs are safe: the push uses a lease and retries on top of
-whatever landed first.
+Concurrent runs are safe: the push uses a lease and retries, with backoff, on
+top of whatever landed first. Spread the cron minutes anyway.
+
+Repositories sharing a data repository share its SBOM archive. Publish only
+lets a run write its own repository's entry, and never replaces an archived
+SBOM that is still fresh, but the first run to see a digest is the one that
+describes it to the others: share a data repository between repositories that
+trust each other's CI.
 
 ## Other platforms
 
@@ -164,7 +172,7 @@ The action is a thin wrapper around a CLI that needs Node.js ≥ 24, `git` and
 git clone --depth 1 https://gitlab.example.com/acme/renovate-trivy-data.git data || true
 node src/cli.ts scan --repository "$CI_PROJECT_PATH" --data-dir data \
   --web-url https://gitlab.example.com/acme/renovate-trivy-data/-/blob/main
-RENOVATE_TRIVY_DATA_TOKEN=… node src/cli.ts publish \
+RENOVATE_TRIVY_DATA_TOKEN=… node src/cli.ts publish --repository "$CI_PROJECT_PATH" \
   --remote https://gitlab.example.com/acme/renovate-trivy-data.git \
   --web-url https://gitlab.example.com/acme/renovate-trivy-data/-/blob/main
 ```
@@ -176,10 +184,11 @@ scan's own lookup cannot resolve `local>`, so prefer the explicit form).
 
 ## What you get
 
-- **In Renovate PRs** that fix critical/high CVEs: opened without waiting for
-  the schedule (with the rest of their group branch, since Renovate schedules
-  a branch as a whole), the `security` label, a raised `prPriority`, and a
-  note in the body with the CVE diff. Updates that *introduce* critical/high
+- **In Renovate PRs** that fix critical/high CVEs: released from the schedule
+  (with the rest of their group branch, since Renovate schedules a branch as
+  a whole), the `security` label, a raised `prPriority`, and a note in the
+  body with the CVE diff. Only the schedule is lifted: `minimumReleaseAge`,
+  PR limits and Dependency Dashboard approval still apply. Updates that *introduce* critical/high
   CVEs get a warning note and nothing else.
 - **In the Dependency Dashboard**: a link to the repository's report.
 - **In the data repository**: `repos/<repo>/report.md`, with every image
@@ -207,6 +216,15 @@ scan's own lookup cannot resolve `local>`, so prefer the explicit form).
 - The scan job runs Renovate and Trivy with a read-only token; the publish
   job runs only `git` and this tool, and is the only one holding the data
   token. That token can write one repository that contains generated data.
+- Publish treats the scan's output as untrusted. It reads only its own
+  repository's entry and SBOM files, re-serialises them, and accepts only the
+  rule shape shown above: rules scoped to that repository, with no key beyond
+  the match fields, `schedule`, `addLabels`, `prPriority` and `prBodyNotes`.
+  A compromised scan cannot add `automerge` or a registry, or touch another
+  repository's rules. Keep the two steps in separate jobs (`step: all` exists
+  for trusted, single-purpose setups).
+- If an image cannot be scanned in one run, its previous rule is kept rather
+  than dropped.
 - A preset is configuration Renovate trusts. Anyone who can push to the data
   repository can change how Renovate behaves on every repository extending
   it, so protect it like your Renovate config.

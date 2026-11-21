@@ -6,8 +6,8 @@ branding:
 
 inputs:
   step:
-    description: "`scan` (read-only: Renovate lookup + Trivy), `publish` (push the delta to the data repository) or `all`."
-    default: all
+    description: "`scan` (read-only: Renovate lookup + Trivy) or `publish` (validate the delta and push it to the data repository), in separate jobs. `all` runs both in one job, which puts the data token next to Renovate and Trivy: avoid it on repositories you do not fully trust."
+    required: true
   data-repository:
     description: "`owner/name` of the GitHub repository that holds the preset, reports and SBOM archive."
     required: true

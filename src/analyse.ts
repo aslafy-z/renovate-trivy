@@ -41,7 +41,9 @@ export function diff(oldVulns: Vuln[], newVulns: Vuln[]): Diff {
 }
 
 export function analyse(targets: RepoTargets, scans: Map<string, Scan>): Analysis {
-  const out: Analysis = { repository: targets.repository, images: [], updates: [], errors: [], skipped: [] };
+  const out: Analysis = {
+    repository: targets.repository, images: [], updates: [], errors: [], skipped: [], branchUpdates: targets.branchUpdates,
+  };
   const error = (ref: string, scan: Scan | undefined) => {
     const msg = scan && !scan.ok ? scan.error : "not scanned";
     if (!out.errors.some((e) => e.ref === ref)) out.errors.push({ ref, error: msg });

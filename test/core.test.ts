@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { analyse, counts, diff } from "../src/analyse.ts";
-import { exact, note, rulesFor } from "../src/preset.ts";
-import { assemble, PRESET_FILE } from "../src/publish.ts";
+import { carryForward, exact, note, rulesFor } from "../src/preset.ts";
+import { applyDelta, assemble, PRESET_FILE, validateRules } from "../src/publish.ts";
 import { parseRef, versionOf } from "../src/refs.ts";
 import { renderReport } from "../src/report.ts";
 import { SbomStore, sbomKey } from "../src/store.ts";
@@ -82,6 +82,8 @@ test("rules: only fixing updates are released, labelled and annotated", () => {
   assert.match((digest.matchJsonata as string[])[0], /^newDigest = "sha256:[0-9a-f]{64}"$/);
   // kener fixes nothing but sits in a group branch with updates that do.
   assert.deepEqual(of("rajnandan1/kener").map((r) => [r.schedule, r.addLabels, r.prBodyNotes]), [[["at any time"], undefined, undefined]]);
+  // Everything generated must pass the publish-side validation.
+  assert.equal(validateRules(rules, "o/r").length, rules.length);
   assert.deepEqual(of("quay.io/argoproj/argocd"), []);
   assert.deepEqual(a.errors, [{ ref: "quay.io/argoproj/argocd:v3.6.2", error: "boom" }]);
 });
@@ -105,15 +107,90 @@ test("rules: the rest of a fixing update's branch is released with it", () => {
   neutral.diff = diff([], []);
   const again = rulesFor(a, { label: "security", prPriority: 10, release: true });
   const mate = again.find((r) => (r.matchPackageNames as string[])[0] === "valkey/valkey")!;
-  assert.deepEqual([mate.schedule, mate.addLabels, mate.prBodyNotes], [["at any time"], undefined, undefined]);
+  assert.deepEqual([mate.schedule, mate.prPriority, mate.addLabels, mate.prBodyNotes], [["at any time"], 10, undefined, undefined]);
   assert.ok(rules.length >= again.length);
+  // A branch mate that is not an image (never scanned) is released too.
+  a.branchUpdates.push({ datasource: "github-releases", name: "aaa/tool", currentValue: "1.0.0", newValue: "1.0.1", branchName: mateBranch(a) });
+  const tool = rulesFor(a, { label: "security", prPriority: 10, release: true }).find((r) => (r.matchPackageNames as string[])[0] === "aaa/tool")!;
+  assert.deepEqual([tool.matchDatasources, tool.schedule], [["github-releases"], ["at any time"]]);
 });
 
-test("notes cannot inject handlebars or break tables", () => {
+const mateBranch = (a: ReturnType<typeof demo>) => a.updates.find((u) => u.diff.fixedGate > 0 && u.branchName)!.branchName!;
+
+test("notes cannot inject handlebars, tables or links", () => {
   const a = demo();
-  const u = a.updates[0];
-  u.diff.fixed[0].id = "CVE-{{evil}}|x";
-  assert.doesNotMatch(note(u), /\{\{|[^\\]\|/);
+  const u = a.updates.find((x) => x.diff.fixedGate > 0)!;
+  u.diff.fixed[0].id = "CVE-{{{evil}}}|x](https://evil.test)";
+  u.diff.fixed[0].url = "https://ok.test/a) [click](https://evil.test";
+  const n = note(u);
+  assert.doesNotMatch(n, /[{}|]/);
+  assert.doesNotMatch(n, /https:\/\/evil|\]\(/);
+  assert.equal(validateRules([{ matchRepositories: ["o/r"], matchDatasources: ["docker"], matchPackageNames: ["x"], matchNewValue: "/^1$/", prBodyNotes: [n] }], "o/r").length, 1);
+});
+
+test("a failed scan keeps the previous run's rule for that update", () => {
+  const a = demo();
+  const [targets] = targetsFromReport(report, { localRepository: "o/r" });
+  const previous = [
+    { matchDatasources: ["docker"], matchPackageNames: ["quay.io/argoproj/argocd"], matchCurrentValue: "/^v3\\.6\\.1$/", matchNewValue: "/^v3\\.6\\.2$/", addLabels: ["security"] },
+    { matchDatasources: ["docker"], matchPackageNames: ["lscr.io/linuxserver/prowlarr"], matchCurrentValue: "/^2\\.7\\.0$/", matchNewValue: "/^3\\.0\\.2$/" },
+  ];
+  assert.deepEqual(carryForward(previous, a, targets).map((r) => (r.matchPackageNames as string[])[0]), ["quay.io/argoproj/argocd"]);
+});
+
+test("validateRules rejects anything renovate-trivy would not generate", () => {
+  const base = { matchRepositories: ["o/r"], matchDatasources: ["docker"], matchPackageNames: ["x"], matchNewValue: "/^1$/" };
+  assert.equal(validateRules([base], "o/r").length, 1);
+  for (const bad of [
+    { ...base, automerge: true },
+    { ...base, registryUrls: ["https://evil.test"] },
+    { ...base, matchRepositories: ["other/repo"] },
+    { ...base, matchRepositories: ["o/r", "other/repo"] },
+    { ...base, schedule: ["* * * * *"] },
+    { ...base, prBodyNotes: ["{{{lookup}}}"] },
+    { ...base, matchJsonata: ["$eval('x')"] },
+    { matchDatasources: ["docker"], matchPackageNames: ["x"], matchNewValue: "/^1$/" },
+    { matchRepositories: ["o/r"], matchDatasources: ["docker"], matchPackageNames: ["x"] },
+  ]) assert.throws(() => validateRules([bad], "o/r"), /rules\.json\[0\]/, JSON.stringify(bad));
+  assert.throws(() => validateRules(undefined, "o/r"));
+});
+
+test("applyDelta only takes its own repository's entry and valid SBOMs", () => {
+  const delta = mkdtempSync(join(tmpdir(), "rt-delta-"));
+  const root = mkdtempSync(join(tmpdir(), "rt-root-"));
+  const key = `sha256-${"a".repeat(64)}.linux-amd64`;
+  const entry = (repo: string) => {
+    mkdirSync(join(delta, "repos", repo), { recursive: true });
+    writeFileSync(join(delta, "repos", repo, "rules.json"), JSON.stringify({ packageRules: [{ matchRepositories: [repo], matchDatasources: ["docker"], matchPackageNames: ["x"], matchNewValue: "/^1$/" }] }));
+    writeFileSync(join(delta, "repos", repo, "state.json"), JSON.stringify({ scannedAt: "t", sboms: { "x:1": key, "bad": "../../etc" }, extra: 1 }));
+    writeFileSync(join(delta, "repos", repo, "report.md"), "# report");
+  };
+  entry("o/r");
+  entry("victim/repo");
+  mkdirSync(join(delta, ".git"));
+  writeFileSync(join(delta, ".git", "config"), "[core]\n\tfsmonitor = evil");
+  writeFileSync(join(delta, "renovate-trivy.json"), "{}");
+  mkdirSync(join(delta, "sboms"));
+  writeFileSync(join(delta, "sboms", `${key}.cdx.json.gz`), "new");
+  writeFileSync(join(delta, "sboms", `${key}.meta.json`), JSON.stringify({ ref: "x:1", trivyVersion: "0.76.2", createdAt: "2999-01-01T00:00:00Z" }));
+
+  const now = Date.parse("2026-06-01T00:00:00Z");
+  assert.deepEqual(applyDelta(delta, root, "o/r", 30, now), { sboms: 1 });
+  assert.equal(existsSync(join(root, ".git")), false);
+  assert.equal(existsSync(join(root, "renovate-trivy.json")), false);
+  assert.equal(existsSync(join(root, "repos", "victim")), false);
+  assert.deepEqual(JSON.parse(readFileSync(join(root, "repos/o/r/state.json"), "utf8")).sboms, { "x:1": key });
+  // The publish side dates the SBOM, so a delta cannot make it immortal.
+  assert.equal(JSON.parse(readFileSync(join(root, "sboms", `${key}.meta.json`), "utf8")).createdAt, "2026-06-01T00:00:00.000Z");
+
+  // A fresh archived SBOM is not replaced; an expired one is.
+  writeFileSync(join(delta, "sboms", `${key}.cdx.json.gz`), "poisoned");
+  assert.deepEqual(applyDelta(delta, root, "o/r", 30, now + 86_400_000), { sboms: 0 });
+  assert.equal(readFileSync(join(root, "sboms", `${key}.cdx.json.gz`), "utf8"), "new");
+  assert.deepEqual(applyDelta(delta, root, "o/r", 30, now + 31 * 86_400_000), { sboms: 1 });
+
+  assert.throws(() => applyDelta(delta, root, "../x"), /unsupported repository/);
+  assert.throws(() => applyDelta(delta, root, "missing/repo"));
 });
 
 test("report renders totals, fixing updates and failures", () => {
@@ -160,7 +237,7 @@ test("assemble merges every repository's rules and prunes unreferenced SBOMs", (
   for (const [repo, key] of [["o/a", "k1"], ["g/sub/b", "k2"]]) {
     mkdirSync(join(root, "repos", repo), { recursive: true });
     writeFileSync(join(root, "repos", repo, "rules.json"), JSON.stringify({ packageRules: [{ matchRepositories: [repo] }] }));
-    writeFileSync(join(root, "repos", repo, "state.json"), JSON.stringify({ sboms: [key] }));
+    writeFileSync(join(root, "repos", repo, "state.json"), JSON.stringify({ sboms: { [`img-${key}`]: key } }));
   }
   mkdirSync(join(root, "sboms"));
   for (const k of ["k1", "k2", "stale"]) for (const ext of ["cdx.json.gz", "meta.json"]) writeFileSync(join(root, "sboms", `${k}.${ext}`), "x");

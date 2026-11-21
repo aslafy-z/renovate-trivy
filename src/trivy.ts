@@ -38,7 +38,7 @@ export async function imageToSbom(opts: TrivyOptions, ref: string, out: string):
   await trivy(opts, [
     "image", "--quiet", "--format", "cyclonedx", "--output", out, "--cache-backend", "memory",
     "--skip-db-update", "--skip-java-db-update", "--skip-check-update",
-    "--image-src", "remote", "--platform", opts.platform, "--timeout", opts.timeout, ref,
+    "--image-src", "remote", "--platform", opts.platform, "--timeout", opts.timeout, "--", ref,
   ]);
 }
 
@@ -52,7 +52,7 @@ export interface SbomResult {
 export async function scanSbom(opts: TrivyOptions, sbom: string, out: string): Promise<SbomResult> {
   await trivy(opts, [
     "sbom", "--quiet", "--scanners", "vuln", "--format", "json", "--output", out, "--cache-backend", "memory",
-    "--skip-db-update", "--skip-java-db-update", sbom,
+    "--skip-db-update", "--skip-java-db-update", "--", sbom,
   ]);
   return parseTrivyJson(JSON.parse(readFileSync(out, "utf8")));
 }

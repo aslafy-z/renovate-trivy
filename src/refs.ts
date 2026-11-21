@@ -4,6 +4,8 @@ export function makeRef(name: string, tag?: string | null, digest?: string | nul
   return name + (tag ? `:${tag}` : "") + (digest ? `@${digest}` : "");
 }
 
+export const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
+
 export interface ParsedRef {
   registry: string;
   repository: string;

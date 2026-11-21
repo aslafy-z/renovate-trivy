@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { parseRef } from "./refs.ts";
+import { DIGEST_RE, parseRef } from "./refs.ts";
 
 const ACCEPT = [
   "application/vnd.oci.image.index.v1+json",
@@ -35,6 +35,7 @@ async function bearer(challenge: string, registry: string): Promise<string | und
   if (params.scope) url.searchParams.set("scope", params.scope);
   const auth = basicAuth(registry);
   const res = await fetch(url, { headers: auth ? { authorization: auth } : {}, signal: AbortSignal.timeout(30_000) });
+  if (res.status === 429) throw Object.assign(new Error(`token ${url.host}: HTTP 429`), { status: 429 });
   if (!res.ok) return undefined;
   const body = (await res.json()) as { token?: string; access_token?: string };
   return body.token ?? body.access_token;
@@ -61,7 +62,8 @@ async function head(host: string, registry: string, repository: string, referenc
   }
   if (!res.ok) throw Object.assign(new Error(`HEAD ${url}: HTTP ${res.status}`), { status: res.status });
   const found = res.headers.get("docker-content-digest");
-  if (!found) throw new Error(`HEAD ${url}: no Docker-Content-Digest header`);
+  // The digest ends up in file names and in generated Renovate config.
+  if (!found || !DIGEST_RE.test(found)) throw new Error(`HEAD ${url}: no valid Docker-Content-Digest header`);
   return found;
 }
 
@@ -72,7 +74,10 @@ async function head(host: string, registry: string, repository: string, referenc
  */
 export async function resolveDigest(ref: string): Promise<string> {
   const { registry, repository, tag, digest } = parseRef(ref);
-  if (digest) return digest;
+  if (digest) {
+    if (!DIGEST_RE.test(digest)) throw new Error(`unsupported digest in ${ref}`);
+    return digest;
+  }
   if (registry !== "docker.io") return head(registry, registry, repository, tag!);
   try {
     return await head("registry-1.docker.io", registry, repository, tag!);
