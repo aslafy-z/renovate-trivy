@@ -198,7 +198,7 @@ scan's own lookup cannot resolve `local>`, so prefer the explicit form).
 - Renovate reads the preset when it runs: after a scan, changes show up on
   Renovate's next pass, not immediately.
 - One platform per image (`linux/amd64` by default).
-- Docker Hub allows 100 anonymous pulls per 6 hours per IP and refuses even
+- Docker Hub rate-limits anonymous pulls per IP and refuses even
   `HEAD` requests once that is spent; renovate-trivy then falls back to
   `mirror.gcr.io`. Log in to Docker Hub in the scan job for reliable runs.
 
