@@ -1,38 +1,40 @@
 /**
- * Publish a scan's delta to the data repository: a single commit, replaced on
- * every run, holding the preset Renovate extends, each repository's rules
- * and report, and the SBOM archive.
+ * Publish a scan's delta to the data branch: a single commit, replaced on
+ * every run, holding the preset Renovate extends, each repository's report
+ * and the shared SBOM archive.
  *
- * The delta comes from the scan job, which runs Renovate and Trivy on
- * repository-controlled input, so it is treated as untrusted: only known
- * files are read, their content is validated and re-serialised, and nothing
- * in it can reach beyond its own repository's entry.
+ * The delta comes from jobs that run Renovate and Trivy on repository- and
+ * registry-controlled input, so it is treated as untrusted: only known files
+ * are read, their content is validated and re-serialised.
  */
-import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
-import { buildPreset, type PackageRule } from "./preset.ts";
+import { dirname, join } from "node:path";
+import { gunzipSync } from "node:zlib";
+import { cloneData, makeGit } from "./git.ts";
+import { buildPreset, type AssembleOptions, type PackageRule } from "./preset.ts";
+import { SBOM_INDEX, SBOM_KEY_RE, describesDigest, sbomPath, type SbomIndex } from "./store.ts";
 
-export interface PublishOptions {
+export interface PublishOptions extends AssembleOptions {
   delta: string;
-  /** The repository this delta is for: the only entry it may write. */
-  repository: string;
   remote: string;
   branch: string;
-  /** Web URL of the data repository's file view, e.g. https://github.com/o/r/blob/main */
-  webUrl?: string;
-  /** Token for an https remote; passed to git through the environment, never the URL. */
   token?: string;
-  sbomMaxAgeDays?: number;
   log: (msg: string) => void;
 }
 
-export const PRESET_FILE = "renovate-trivy.json";
-const REPOSITORY_RE = /^[\w-][\w.-]*(\/[\w-][\w.-]*)+$/;
-const SBOM_KEY_RE = /^sha256-[0-9a-f]{64}\.[a-z0-9]+-[a-z0-9]+(-[a-z0-9]+)?$/;
+/** What a scan hands to publish, next to the files themselves. */
+export interface RunManifest {
+  /** Every repository of this run; entries of repositories not listed are removed. */
+  repositories: { repository: string; ok: boolean }[];
+  /** SBOMs generated this run. */
+  sboms: SbomIndex;
+}
+
+export const REPOSITORY_RE = /^[\w-][\w.-]*(\/[\w-][\w.-]*)+$/;
 const VERSION_RE = /^\d+\.\d+\.\d+[\w.+-]*$/;
-const MAX_RULES = 5000;
+const JSONATA_RE = /^(currentDigest = "sha256:[0-9a-f]{64}"|newDigest = "sha256:[0-9a-f]{64}"|currentDigest = "sha256:[0-9a-f]{64}" and newDigest = "sha256:[0-9a-f]{64}")$/;
+const MAX_RULES = 20_000;
 
 function readRegular(path: string, maxBytes: number): Buffer {
   const st = lstatSync(path);
@@ -46,10 +48,9 @@ const isStrings = (v: unknown, max = 50): v is string[] =>
 const isExact = (v: unknown) => typeof v === "string" && v.startsWith("/^") && v.endsWith("$/") && v.length <= 600;
 
 /**
- * Accept only the rule shape renovate-trivy generates. A preset is
- * configuration Renovate trusts, shared by every repository extending it:
- * a delta must not be able to add `automerge`, registries, or rules for
- * another repository.
+ * Accept only the rule shape renovate-trivy generates. The preset is
+ * configuration Renovate trusts, on every repository extending it: nothing
+ * coming out of a scan may add `automerge`, a registry, or a template.
  */
 export function validateRules(input: unknown, repository: string): PackageRule[] {
   if (!Array.isArray(input) || input.length > MAX_RULES) throw new Error("rules.json: packageRules must be an array");
@@ -60,7 +61,7 @@ export function validateRules(input: unknown, repository: string): PackageRule[]
     matchPackageNames: (v) => isStrings(v) && v.length === 1,
     matchCurrentValue: isExact,
     matchNewValue: isExact,
-    matchJsonata: (v) => isStrings(v) && v.length === 1 && /^newDigest = "sha256:[0-9a-f]{64}"$/.test(v[0]),
+    matchJsonata: (v) => isStrings(v) && v.length === 1 && JSONATA_RE.test(v[0]),
     schedule: (v) => isStrings(v) && v.length === 1 && v[0] === "at any time",
     addLabels: (v) => isStrings(v, 5) && v.every((s) => s.length <= 50),
     prPriority: (v) => Number.isInteger(v) && Math.abs(v as number) <= 100,
@@ -68,10 +69,16 @@ export function validateRules(input: unknown, repository: string): PackageRule[]
   };
   return input.map((rule, i) => {
     if (typeof rule !== "object" || rule === null || Array.isArray(rule)) throw new Error(`rules.json[${i}]: not an object`);
-    for (const required of ["matchRepositories", "matchDatasources", "matchPackageNames"]) {
+    for (const required of ["matchDatasources", "matchPackageNames"]) {
       if (!(required in rule)) throw new Error(`rules.json[${i}]: ${required} is required`);
     }
-    if (!("matchNewValue" in rule) && !("matchJsonata" in rule)) throw new Error(`rules.json[${i}]: must match an exact new version`);
+    if (!("matchNewValue" in rule) && !/newDigest/.test(String((rule as PackageRule).matchJsonata))) {
+      throw new Error(`rules.json[${i}]: must match an exact new version`);
+    }
+    // Labels and notes describe an image; only a schedule release may be repository-specific.
+    if ("matchRepositories" in rule && ("addLabels" in rule || "prBodyNotes" in rule)) {
+      throw new Error(`rules.json[${i}]: a repository-scoped rule can only release a schedule`);
+    }
     const out: PackageRule = {};
     for (const [key, value] of Object.entries(rule)) {
       if (!checks[key]?.(value)) throw new Error(`rules.json[${i}]: ${key} is not allowed or has an unexpected value`);
@@ -81,109 +88,119 @@ export function validateRules(input: unknown, repository: string): PackageRule[]
   });
 }
 
-const minor = (v: string) => v.split(".").slice(0, 2).join(".");
+const validRepo = (r: unknown): r is string => typeof r === "string" && REPOSITORY_RE.test(r) && !r.split("/").some((s) => s === ".." || s === ".");
 
-/** Copy one repository's validated entry and its new SBOMs from the delta into the data tree. */
-export function applyDelta(delta: string, root: string, repository: string, maxAgeDays = 30, now = Date.now()): { sboms: number } {
-  if (!REPOSITORY_RE.test(repository) || repository.split("/").some((s) => s === ".." || s === ".")) {
-    throw new Error(`unsupported repository name: ${repository}`);
-  }
-  const src = join(delta, "repos", repository);
-  const dst = join(root, "repos", repository);
-  const rules = validateRules(JSON.parse(readRegular(join(src, "rules.json"), 8 << 20).toString("utf8")).packageRules, repository);
-  const stateIn = JSON.parse(readRegular(join(src, "state.json"), 8 << 20).toString("utf8"));
-  const sboms: Record<string, string> = {};
-  for (const [ref, key] of Object.entries(stateIn.sboms ?? {})) {
-    if (typeof key === "string" && SBOM_KEY_RE.test(key) && ref.length <= 1000) sboms[ref] = key;
-  }
-  const str = (v: unknown) => (typeof v === "string" ? v.slice(0, 100) : "");
-  const state = {
-    scannedAt: str(stateIn.scannedAt), platform: str(stateIn.platform),
-    trivyVersion: str(stateIn.trivyVersion), dbUpdatedAt: str(stateIn.dbUpdatedAt), sboms,
-  };
-  const report = readRegular(join(src, "report.md"), 4 << 20);
-
-  mkdirSync(dst, { recursive: true });
-  writeFileSync(join(dst, "rules.json"), `${JSON.stringify({ packageRules: rules }, null, 2)}\n`);
-  writeFileSync(join(dst, "state.json"), `${JSON.stringify(state, null, 2)}\n`);
-  writeFileSync(join(dst, "report.md"), report);
-  // The summary becomes part of a Handlebars template in the shared preset.
-  rmSync(join(dst, "summary.md"), { force: true });
-  if (existsSync(join(src, "summary.md"))) {
-    const summary = readRegular(join(src, "summary.md"), 20_000).toString("utf8");
-    if (/[{}]/.test(summary)) throw new Error("summary.md: braces are not allowed");
-    writeFileSync(join(dst, "summary.md"), summary);
-  }
-
-  let added = 0;
-  const from = join(delta, "sboms");
-  const to = join(root, "sboms");
-  if (existsSync(from)) {
-    mkdirSync(to, { recursive: true });
-    for (const file of readdirSync(from)) {
-      if (!file.endsWith(".cdx.json.gz")) continue;
-      const key = file.slice(0, -".cdx.json.gz".length);
-      if (!SBOM_KEY_RE.test(key)) throw new Error(`sboms/${file}: unexpected name`);
-      const metaIn = JSON.parse(readRegular(join(from, `${key}.meta.json`), 1 << 16).toString("utf8"));
-      const trivyVersion = String(metaIn.trivyVersion ?? "");
-      if (!VERSION_RE.test(trivyVersion)) throw new Error(`sboms/${key}.meta.json: bad trivyVersion`);
-      // An archived SBOM is shared by every repository using that image, so
-      // it is only replaced when it would be regenerated anyway.
-      const existing = join(to, `${key}.meta.json`);
-      if (existsSync(existing)) {
-        const old = JSON.parse(readFileSync(existing, "utf8"));
-        const expired = now - Date.parse(old.createdAt) > maxAgeDays * 86_400_000;
-        if (!expired && minor(String(old.trivyVersion)) === minor(trivyVersion)) continue;
-      }
-      writeFileSync(join(to, file), readRegular(join(from, file), 64 << 20));
-      const [digest, platform] = [key.slice(0, 71).replace("-", ":"), key.slice(72)];
-      // createdAt is set here: the delta does not get to decide how long its SBOM lives.
-      const meta = { ref: String(metaIn.ref ?? "").slice(0, 1000), digest, platform, trivyVersion, createdAt: new Date(now).toISOString() };
-      writeFileSync(existing, `${JSON.stringify(meta, null, 2)}\n`);
-      added++;
-    }
-  }
-  return { sboms: added };
-}
-
-function find(dir: string, name: string): string[] {
+function entries(root: string): string[] {
+  const dir = join(root, "repos");
   if (!existsSync(dir)) return [];
   return readdirSync(dir, { recursive: true, encoding: "utf8" })
-    .filter((f) => f === name || f.endsWith(`/${name}`))
-    .map((f) => join(dir, f))
+    .filter((f) => f.endsWith("/rules.json"))
+    .map((f) => f.slice(0, -"/rules.json".length))
     .sort();
 }
 
-/** Rebuild everything derived from the per-repository entries. */
-export function assemble(root: string, webUrl?: string): { repos: string[]; pruned: number } {
-  const repos = find(join(root, "repos"), "rules.json");
-  const fragments = repos.map((f) => (JSON.parse(readFileSync(f, "utf8")).packageRules ?? []) as PackageRule[]);
-  const summaries = new Map<string, string>();
-  for (const f of repos) {
-    const summary = join(f, "..", "summary.md");
-    const name = relative(join(root, "repos"), f).replace(/\/rules\.json$/, "");
-    if (REPOSITORY_RE.test(name) && existsSync(summary)) summaries.set(name, readFileSync(summary, "utf8"));
+/** Bring the validated content of a delta into the data tree. Returns the SBOM files written. */
+export function applyDelta(delta: string, root: string, now = Date.now()): { repositories: number; sboms: string[] } {
+  const run = JSON.parse(readRegular(join(delta, "run.json"), 16 << 20).toString("utf8")) as RunManifest;
+  if (!Array.isArray(run.repositories)) throw new Error("run.json: repositories must be an array");
+  const listed = new Set<string>();
+  for (const r of run.repositories) {
+    if (!validRepo(r.repository)) throw new Error(`unsupported repository name: ${String(r.repository)}`);
+    listed.add(r.repository);
   }
-  const template = webUrl ? `${webUrl}/repos/{{{repository}}}/report.md` : undefined;
-  writeFileSync(join(root, PRESET_FILE), `${JSON.stringify(buildPreset(fragments, template, summaries), null, 2)}\n`);
+  // A repository that left the scan list takes its rules and report with it.
+  for (const repo of entries(root)) if (!listed.has(repo)) rmSync(join(root, "repos", repo), { recursive: true, force: true });
+
+  let written = 0;
+  for (const { repository, ok } of run.repositories) {
+    // A repository whose lookup failed keeps what the previous run published.
+    if (!ok) continue;
+    const src = join(delta, "repos", repository);
+    const dst = join(root, "repos", repository);
+    const rules = validateRules(JSON.parse(readRegular(join(src, "rules.json"), 8 << 20).toString("utf8")).packageRules, repository);
+    const stateIn = JSON.parse(readRegular(join(src, "state.json"), 8 << 20).toString("utf8"));
+    const sboms: Record<string, string> = {};
+    for (const [ref, key] of Object.entries(stateIn.sboms ?? {})) {
+      if (typeof key === "string" && SBOM_KEY_RE.test(key) && ref.length <= 1000) sboms[ref] = key;
+    }
+    const str = (v: unknown) => (typeof v === "string" ? v.slice(0, 100) : "");
+    const state = {
+      scannedAt: str(stateIn.scannedAt), platform: str(stateIn.platform),
+      trivyVersion: str(stateIn.trivyVersion), dbUpdatedAt: str(stateIn.dbUpdatedAt), sboms,
+    };
+    const report = readRegular(join(src, "report.md"), 4 << 20);
+    rmSync(dst, { recursive: true, force: true });
+    mkdirSync(dst, { recursive: true });
+    writeFileSync(join(dst, "rules.json"), `${JSON.stringify({ packageRules: rules }, null, 2)}\n`);
+    writeFileSync(join(dst, "state.json"), `${JSON.stringify(state, null, 2)}\n`);
+    writeFileSync(join(dst, "report.md"), report);
+    // The summary becomes part of a Handlebars template in the preset.
+    if (existsSync(join(src, "summary.md"))) {
+      const summary = readRegular(join(src, "summary.md"), 20_000).toString("utf8");
+      if (/[{}]/.test(summary)) throw new Error(`${repository}/summary.md: braces are not allowed`);
+      writeFileSync(join(dst, "summary.md"), summary);
+    }
+    written++;
+  }
+
+  const indexFile = join(root, SBOM_INDEX);
+  const index: SbomIndex = existsSync(indexFile) ? JSON.parse(readFileSync(indexFile, "utf8")) : {};
+  const added: string[] = [];
+  for (const [key, meta] of Object.entries(run.sboms ?? {})) {
+    if (!SBOM_KEY_RE.test(key)) throw new Error(`run.json: unexpected SBOM key ${key}`);
+    const trivyVersion = String(meta?.trivyVersion ?? "");
+    if (!VERSION_RE.test(trivyVersion)) throw new Error(`run.json: bad trivyVersion for ${key}`);
+    const gz = readRegular(join(delta, sbomPath(key)), 64 << 20);
+    // The archive is shared: an SBOM only enters it under the digest it names.
+    if (!describesDigest(gunzipSync(gz, { maxOutputLength: 1 << 30 }).toString("utf8"), key)) {
+      throw new Error(`${sbomPath(key)}: does not describe the image its name says`);
+    }
+    const file = join(root, sbomPath(key));
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, gz);
+    // Dated here: a delta does not decide how long its SBOM lives.
+    index[key] = { ref: String(meta.ref ?? "").slice(0, 1000), trivyVersion, createdAt: new Date(now).toISOString() };
+    added.push(sbomPath(key));
+  }
+  writeIndex(indexFile, index);
+  return { repositories: written, sboms: added };
+}
+
+function writeIndex(file: string, index: SbomIndex): void {
+  const sorted = Object.fromEntries(Object.entries(index).sort(([a], [b]) => a.localeCompare(b)));
+  writeFileSync(file, `${JSON.stringify(sorted, null, 1)}\n`);
+}
+
+/** Rebuild everything derived from the per-repository entries. Returns the SBOM files no repository uses any more. */
+export function assemble(root: string, o: AssembleOptions = {}): { repos: string[]; pruned: string[] } {
+  const repos = entries(root);
+  const fragments = new Map<string, PackageRule[]>();
+  const summaries = new Map<string, string>();
+  const used = new Set<string>();
+  for (const repo of repos) {
+    const dir = join(root, "repos", repo);
+    fragments.set(repo, JSON.parse(readFileSync(join(dir, "rules.json"), "utf8")).packageRules ?? []);
+    if (existsSync(join(dir, "summary.md"))) summaries.set(repo, readFileSync(join(dir, "summary.md"), "utf8"));
+    for (const k of Object.values(JSON.parse(readFileSync(join(dir, "state.json"), "utf8")).sboms ?? {})) used.add(String(k));
+  }
+  rmSync(join(root, "shards"), { recursive: true, force: true });
+  for (const [file, content] of Object.entries(buildPreset(fragments, summaries, o))) {
+    mkdirSync(dirname(join(root, file)), { recursive: true });
+    writeFileSync(join(root, file), `${JSON.stringify(content, null, 2)}\n`);
+  }
 
   // An SBOM no repository references any more is of an image nobody runs.
-  const used = new Set<string>();
-  for (const f of find(join(root, "repos"), "state.json")) {
-    for (const k of Object.values(JSON.parse(readFileSync(f, "utf8")).sboms ?? {})) used.add(String(k));
+  const indexFile = join(root, SBOM_INDEX);
+  const index: SbomIndex = existsSync(indexFile) ? JSON.parse(readFileSync(indexFile, "utf8")) : {};
+  const pruned: string[] = [];
+  for (const key of Object.keys(index)) {
+    if (used.has(key)) continue;
+    delete index[key];
+    pruned.push(sbomPath(key));
+    rmSync(join(root, sbomPath(key)), { force: true });
   }
-  let pruned = 0;
-  const sboms = join(root, "sboms");
-  if (existsSync(sboms)) {
-    for (const f of readdirSync(sboms)) {
-      const key = f.replace(/\.(cdx\.json\.gz|meta\.json)$/, "");
-      if (!used.has(key)) {
-        rmSync(join(sboms, f));
-        pruned++;
-      }
-    }
-  }
-  const names = repos.map((f) => relative(join(root, "repos"), f).replace(/\/rules\.json$/, ""));
+  writeIndex(indexFile, index);
+
   writeFileSync(
     join(root, "README.md"),
     [
@@ -192,67 +209,53 @@ export function assemble(root: string, webUrl?: string): { repos: string[]; prun
       "Generated by [renovate-trivy](https://github.com/aslafy-z/renovate-trivy). This branch is a single commit,",
       "force-pushed on every run: do not edit it, and do not delete it while a Renovate config extends the preset.",
       "",
-      `- \`${PRESET_FILE}\`: the Renovate preset.`,
+      "- `renovate-trivy.json`: the Renovate preset (and `shards/` once it outgrows one file).",
       "- `repos/<repository>/report.md`: CVE report per repository.",
-      "- `sboms/`: one CycloneDX SBOM per image digest, so images are pulled once.",
+      `- \`sboms/\`, \`${SBOM_INDEX}\`: one CycloneDX SBOM per image digest, shared by every repository.`,
       "",
-      "## Repositories",
+      `## Repositories (${repos.length})`,
       "",
-      ...names.map((n) => `- [${n}](repos/${n}/report.md)`),
+      ...repos.map((n) => `- [${n}](repos/${n}/report.md)`),
       "",
     ].join("\n"),
   );
-  return { repos: names, pruned };
+  return { repos, pruned };
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export async function publish(o: PublishOptions): Promise<void> {
-  const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
-  if (o.token) {
-    // http.extraHeader through the environment keeps the token out of argv,
-    // .git/config and error messages.
-    const basic = Buffer.from(`x-access-token:${o.token}`).toString("base64");
-    env.GIT_CONFIG_COUNT = "1";
-    env.GIT_CONFIG_KEY_0 = "http.extraHeader";
-    env.GIT_CONFIG_VALUE_0 = `Authorization: Basic ${basic}`;
-  }
-  const git = (cwd: string, ...args: string[]) =>
-    execFileSync("git", args, { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-
+  const git = makeGit({ token: o.token });
   let lastError: unknown;
   for (let attempt = 1; attempt <= 5; attempt++) {
     const dir = mkdtempSync(join(tmpdir(), "renovate-trivy-data-"));
     try {
-      git(dir, "init", "-q");
-      git(dir, "remote", "add", "origin", o.remote);
-      let base = "";
-      try {
-        git(dir, "fetch", "-q", "--depth", "1", "origin", o.branch);
-        base = git(dir, "rev-parse", "FETCH_HEAD");
-        git(dir, "checkout", "-q", "FETCH_HEAD");
-      } catch {
-        o.log(`branch ${o.branch} does not exist yet: creating it`);
-      }
-      const { sboms } = applyDelta(o.delta, dir, o.repository, o.sbomMaxAgeDays);
-      const { repos, pruned } = assemble(dir, o.webUrl);
+      // SBOM blobs stay on the server: only the small files are downloaded,
+      // and the new commit reuses the archived ones by id.
+      const exists = cloneData(git, o.remote, o.branch, dir);
+      const base = exists ? git(dir, "rev-parse", "HEAD") : "";
+      if (!exists) o.log(`branch ${o.branch} does not exist yet: creating it`);
+      const { repositories, sboms } = applyDelta(o.delta, dir);
+      const { repos, pruned } = assemble(dir, o);
       git(dir, "checkout", "-q", "--orphan", "publish");
-      git(dir, "add", "-A");
+      git(dir, "add", "-A", "--sparse", ".");
+      for (let i = 0; i < pruned.length; i += 500) {
+        git(dir, "rm", "-q", "--cached", "--sparse", "--ignore-unmatch", "--", ...pruned.slice(i, i + 500));
+      }
       git(
         dir, "-c", "user.name=renovate-trivy", "-c", "user.email=renovate-trivy@users.noreply.github.com",
         "commit", "-q", "--allow-empty", "-m", `renovate-trivy: ${repos.length} repositories`,
       );
-      // The lease makes a concurrent run's push fail instead of being
-      // overwritten; the retry then re-applies this delta on top of it.
+      // The lease makes a concurrent run's push fail instead of being overwritten.
       git(dir, "push", "-q", `--force-with-lease=${o.branch}:${base}`, "origin", `HEAD:refs/heads/${o.branch}`);
-      o.log(`published ${o.repository}: ${sboms} new SBOMs, ${pruned} stale files pruned, ${repos.length} repositories in the preset`);
+      o.log(`published: ${repositories} repositories updated (${repos.length} in the preset), ${sboms.length} new SBOMs, ${pruned.length} pruned`);
       return;
     } catch (err) {
       lastError = err;
       const stderr = (err as { stderr?: string }).stderr;
       // A validation error will not get better by retrying.
       if (stderr === undefined) throw err;
-      o.log(`publish attempt ${attempt} failed: ${stderr.trim().split("\n").at(-1)}`);
+      o.log(`publish attempt ${attempt} failed: ${String(stderr).trim().split("\n").at(-1)}`);
       await sleep(attempt * (2000 + Math.random() * 8000));
     } finally {
       rmSync(dir, { recursive: true, force: true });

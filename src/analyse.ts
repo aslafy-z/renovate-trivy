@@ -75,6 +75,7 @@ export function analyse(targets: RepoTargets, scans: Map<string, Scan>): Analysi
         from: image.ref,
         fromName: image.name,
         currentValue: image.currentValue,
+        currentDigest: image.currentDigest,
         fromCounts: counts(cur.vulns),
         toCounts: counts(next.vulns),
         diff: diff(cur.vulns, next.vulns),

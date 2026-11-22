@@ -28,6 +28,7 @@ export interface BranchUpdate {
   datasource: string;
   name: string;
   currentValue?: string;
+  currentDigest?: string;
   newValue?: string;
   newDigest?: string;
   branchName: string;
@@ -80,6 +81,7 @@ export interface AnalysedUpdate extends Update {
   from: string;
   fromName: string;
   currentValue?: string;
+  currentDigest?: string;
   fromCounts: Record<Severity, number>;
   toCounts: Record<Severity, number>;
   diff: Diff;

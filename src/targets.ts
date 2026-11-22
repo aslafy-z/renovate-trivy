@@ -58,7 +58,7 @@ export function targetsFromReport(report: RenovateReport, opts: TargetOptions = 
           for (const upd of dep.updates ?? []) {
             if (!depName || !dep.datasource || !upd.branchName || upd.newName) continue;
             branchUpdates.push({
-              datasource: dep.datasource, name: depName, currentValue: dep.currentValue,
+              datasource: dep.datasource, name: depName, currentValue: dep.currentValue, currentDigest: dep.currentDigest,
               newValue: upd.newValue, newDigest: upd.newDigest, branchName: upd.branchName,
             });
           }

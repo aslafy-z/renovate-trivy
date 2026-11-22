@@ -19,6 +19,8 @@ async function trivy(opts: TrivyOptions, args: string[]): Promise<void> {
   const env = { ...process.env };
   delete env.GITHUB_TOKEN;
   delete env.GH_TOKEN;
+  delete env.RENOVATE_TRIVY_DATA_TOKEN;
+  delete env.RENOVATE_TRIVY_READ_TOKEN;
   try {
     await exec(opts.bin, args, { env, maxBuffer: 64 * 1024 * 1024 });
   } catch (err) {

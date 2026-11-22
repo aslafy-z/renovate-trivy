@@ -1,39 +1,42 @@
 name: renovate-trivy
-description: Scan the container images Renovate tracks with Trivy and feed the CVE findings back to Renovate through a preset
+description: Scan the container images Renovate tracks across your repositories with Trivy and feed the CVE findings back to Renovate through one preset
 branding:
   icon: shield
   color: blue
 
 inputs:
   step:
-    description: "`scan` (read-only: Renovate lookup + Trivy) or `publish` (validate the delta and push it to the data repository), in separate jobs. `all` runs both in one job, which puts the data token next to Renovate and Trivy: avoid it on repositories you do not fully trust."
+    description: "`lookup` (Renovate, read-only, on each repository), `scan` (Trivy) or `publish` (validate and push to the data branch). Run them as three jobs and pass `runner.temp/renovate-trivy` between them as an artifact."
     required: true
-  data-repository:
-    description: "`owner/name` of the GitHub repository that holds the preset, reports and SBOM archive."
-    required: true
-  data-branch:
-    description: Branch of the data repository to publish to.
-    default: main
-  data-token:
-    description: Token with contents write access to the data repository. Only needed by the `publish` step.
+  repositories:
+    description: "`lookup`: space- or newline-separated `owner/name` list of the repositories to scan."
     default: ""
-  delta-path:
-    description: Directory the `scan` step writes and the `publish` step reads. Pass it between jobs as an artifact.
-    default: ${{ runner.temp }}/renovate-trivy-delta
-  repo-dir:
-    description: Checkout to scan.
-    default: ${{ github.workspace }}
+  read-token:
+    description: "`lookup`: token that can clone the repositories. Not needed for public ones."
+    default: ""
+  data-repository:
+    description: "`owner/name` of the repository holding the data branch. Defaults to the repository running the workflow."
+    default: ${{ github.repository }}
+  data-branch:
+    description: Branch that receives the preset, the reports and the SBOM archive.
+    default: data
+  data-token:
+    description: "`scan` reads the data branch with it, `publish` pushes with it (needs `contents: write`)."
+    default: ${{ github.token }}
   skip-registries:
-    description: Space-separated registry hosts not to scan (unreachable from the runner).
+    description: "`lookup`: space-separated registry hosts not to scan (unreachable from the runner)."
     default: ""
   label:
-    description: Label Renovate adds to PRs that fix critical/high CVEs.
+    description: "`scan`: label Renovate adds to PRs that fix critical/high CVEs."
     default: security
   release:
-    description: Release fixing updates from the repository's Renovate schedule.
+    description: "`scan`: release fixing updates from each repository's Renovate schedule."
+    default: "true"
+  dashboard-report:
+    description: "`scan`: put a CVE summary at the top of each Dependency Dashboard."
     default: "true"
   renovate-version:
-    description: Renovate npm version used for the lookup. Defaults to the version pinned in this action.
+    description: "`lookup`: Renovate npm version. Defaults to the version pinned in this action."
     default: ""
 
 runs:
@@ -43,7 +46,23 @@ runs:
       with:
         node-version: 24
 
-    - if: inputs.step != 'publish'
+    - name: Lookup
+      if: inputs.step == 'lookup'
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        REPOSITORIES: ${{ inputs.repositories }}
+        SKIP_REGISTRIES: ${{ inputs.skip-registries }}
+        RENOVATE_VERSION: ${{ inputs.renovate-version }}
+        RENOVATE_TRIVY_READ_TOKEN: ${{ inputs.read-token }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        args=(--repositories "$REPOSITORIES" --out "$RUNNER_TEMP/renovate-trivy/targets.json")
+        for registry in $SKIP_REGISTRIES; do args+=(--skip-registry "$registry"); done
+        [ -z "$RENOVATE_VERSION" ] || args+=(--renovate-version "$RENOVATE_VERSION")
+        node src/cli.ts lookup "${args[@]}"
+
+    - if: inputs.step == 'scan'
       uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
       with:
         working_directory: ${{ github.action_path }}
@@ -51,42 +70,34 @@ runs:
         cache_key_prefix: renovate-trivy
 
     - name: Scan
-      if: inputs.step != 'publish'
+      if: inputs.step == 'scan'
       shell: bash
       working-directory: ${{ github.action_path }}
       env:
         DATA_REPOSITORY: ${{ inputs.data-repository }}
         DATA_BRANCH: ${{ inputs.data-branch }}
-        DELTA: ${{ inputs.delta-path }}
-        REPO_DIR: ${{ inputs.repo-dir }}
-        SKIP_REGISTRIES: ${{ inputs.skip-registries }}
+        RENOVATE_TRIVY_DATA_TOKEN: ${{ inputs.data-token }}
         LABEL: ${{ inputs.label }}
         RELEASE: ${{ inputs.release }}
-        RENOVATE_VERSION: ${{ inputs.renovate-version }}
-        GITHUB_TOKEN: ${{ github.token }}
+        DASHBOARD_REPORT: ${{ inputs.dashboard-report }}
       run: |
-        data="$RUNNER_TEMP/renovate-trivy-data"
-        rm -rf "$data"
-        # The archive is only read here; a missing branch means a first run.
-        git clone --quiet --depth 1 --branch "$DATA_BRANCH" "$GITHUB_SERVER_URL/$DATA_REPOSITORY.git" "$data" 2>/dev/null \
-          || echo "no existing data on $DATA_REPOSITORY@$DATA_BRANCH: scanning from scratch"
-        args=(--repo-dir "$REPO_DIR" --out "$DELTA" --data-dir "$data" --label "$LABEL"
+        dir="$RUNNER_TEMP/renovate-trivy"
+        args=(--targets "$dir/targets.json" --out "$dir/delta" --label "$LABEL"
+              --data-remote "$GITHUB_SERVER_URL/$DATA_REPOSITORY.git" --data-branch "$DATA_BRANCH"
               --web-url "$GITHUB_SERVER_URL/$DATA_REPOSITORY/blob/$DATA_BRANCH")
-        for registry in $SKIP_REGISTRIES; do args+=(--skip-registry "$registry"); done
         [ "$RELEASE" = "true" ] || args+=(--no-release)
-        [ -z "$RENOVATE_VERSION" ] || args+=(--renovate-version "$RENOVATE_VERSION")
+        [ "$DASHBOARD_REPORT" = "true" ] || args+=(--no-dashboard-report)
         mise exec -- node src/cli.ts scan "${args[@]}"
 
     - name: Publish
-      if: inputs.step != 'scan'
+      if: inputs.step == 'publish'
       shell: bash
       working-directory: ${{ github.action_path }}
       env:
         DATA_REPOSITORY: ${{ inputs.data-repository }}
         DATA_BRANCH: ${{ inputs.data-branch }}
-        DELTA: ${{ inputs.delta-path }}
         RENOVATE_TRIVY_DATA_TOKEN: ${{ inputs.data-token }}
       run: |
-        node src/cli.ts publish --delta "$DELTA" --branch "$DATA_BRANCH" \
+        node src/cli.ts publish --delta "$RUNNER_TEMP/renovate-trivy/delta" --branch "$DATA_BRANCH" \
           --remote "$GITHUB_SERVER_URL/$DATA_REPOSITORY.git" \
           --web-url "$GITHUB_SERVER_URL/$DATA_REPOSITORY/blob/$DATA_BRANCH"
