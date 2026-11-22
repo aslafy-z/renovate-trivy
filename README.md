@@ -84,7 +84,7 @@ link. Two things are per repository and kept small:
   update's *group* branch are released with it. Those rules name the
   repositories whose grouping puts them together.
 - The Dependency Dashboard summary: one block per repository in the dashboard
-  header, each rendered only for its repository, within a size budget. Past
+  footer, each rendered only for its repository, within a size budget. Past
   the budget, the largest summaries become a link to the report.
 
 Once the rules outgrow one file they move to `shards/` files that the preset
@@ -160,9 +160,10 @@ branch) are sent to git as an HTTP header. Then extend
   is lifted: `minimumReleaseAge`, PR limits and Dependency Dashboard approval
   still apply. Updates that *introduce* critical/high CVEs get a warning note
   and nothing else.
-- **In the Dependency Dashboard**: a CVE summary at the top of the issue
-  (totals, the pending updates that fix CVEs, the most exposed images),
-  written by Renovate itself. `dashboard-report: false` keeps it out.
+- **In the Dependency Dashboard**: a short section at the bottom of the issue,
+  below Renovate's own content: the totals, the pending updates that fix
+  CVEs (each linked to its pull request) and the exposed images nothing
+  fixes yet. Renovate writes it itself. `dashboard-report: false` keeps it out.
 - **On the data branch**: `repos/<repo>/report.md`, with every image ranked by
   critical/high count, its best available update, the CVE list, and anything
   that could not be scanned.

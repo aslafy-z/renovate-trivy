@@ -33,7 +33,7 @@ inputs:
     description: "`scan`: release fixing updates from each repository's Renovate schedule."
     default: "true"
   dashboard-report:
-    description: "`scan`: put a CVE summary at the top of each Dependency Dashboard."
+    description: "`scan`: add a CVE summary at the bottom of each Dependency Dashboard."
     default: "true"
   renovate-version:
     description: "`lookup`: Renovate npm version. Defaults to the version pinned in this action."

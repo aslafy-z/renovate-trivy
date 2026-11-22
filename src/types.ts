@@ -36,6 +36,8 @@ export interface BranchUpdate {
 
 export interface RepoTargets {
   repository: string;
+  /** Web page of the repository, to link its pull requests. */
+  url?: string;
   images: Image[];
   branchUpdates: BranchUpdate[];
 }

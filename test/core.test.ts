@@ -142,11 +142,11 @@ test("rules beyond one file move to shards the preset extends", () => {
 
 test("dashboard summaries are embedded within a budget, then degrade to links", () => {
   const summaries = new Map([["o/small", "S".repeat(100)], ["o/big", "B".repeat(5000)], ["o/huge", "H".repeat(9000)]]);
-  const header = (buildPreset(new Map(), summaries, { webUrl: "https://h/d", summaryBudget: 5400 }) as any)["renovate-trivy.json"].dependencyDashboardHeader as string;
+  const header = (buildPreset(new Map(), summaries, { webUrl: "https://h/d", summaryBudget: 5400 }) as any)["renovate-trivy.json"].dependencyDashboardFooter as string;
   assert.match(header, /\{\{#if \(equals \(lowercase repository\) "o\/small"\)\}\}S{100}\{\{\/if\}\}/);
   assert.match(header, /B{5000}/);
   assert.doesNotMatch(header, /HHH/);
-  assert.match(header, /"o\/huge"\)\}\}🛡️ \[Container image CVE report\]\(https:\/\/h\/d\/repos\/o\/huge\/report\.md\)/);
+  assert.match(header, /"o\/huge"\)\}\}🛡️ \[Container image vulnerability report\]\(https:\/\/h\/d\/repos\/o\/huge\/report\.md\)/);
 });
 
 test("validateRules rejects anything renovate-trivy would not generate", () => {
@@ -247,7 +247,7 @@ test("assemble writes the preset and prunes SBOMs nobody references", () => {
   const preset = JSON.parse(readFileSync(join(root, "renovate-trivy.json"), "utf8"));
   // Two repositories, one identical image rule.
   assert.equal(preset.packageRules.length, 1);
-  assert.match(preset.dependencyDashboardHeader, /"g\/sub\/b"\)\}\}summary\{\{\/if\}\}/);
+  assert.match(preset.dependencyDashboardFooter, /"g\/sub\/b"\)\}\}summary\{\{\/if\}\}/);
 });
 
 test("report and summary render totals, fixing updates and failures", () => {
@@ -255,8 +255,10 @@ test("report and summary render totals, fixing updates and failures", () => {
   const md = renderReport(analysis, meta);
   assert.match(md, /`lscr.io\/linuxserver\/prowlarr` \| `2\.7\.0` → `3\.0\.2` \| 1 \/ 0 → 0 \/ 0 \| 1 \| 0 \|/);
   assert.match(md, /## Not scanned\n\n- `quay.io\/argoproj\/argocd:v3\.6\.2`: boom/);
-  const summary = renderSummary(analysis, meta, "https://h/report.md");
-  assert.match(summary, /images scanned.*\[full report\]\(https:\/\/h\/report\.md\)/);
+  const summary = renderSummary(analysis, meta, { reportUrl: "https://h/report.md", prUrl: (b) => `https://h/o/r/pull/${b}` });
+  assert.match(summary, /in 9 images\. \[Full report\]\(https:\/\/h\/report\.md\)/);
+  assert.match(summary, / - \[`linuxserver\/prowlarr` 2\.7\.0 → 3\.0\.2\]\(https:\/\/h\/o\/r\/pull\/renovate\/lsio-arr\): fixes 1 critical/);
+  assert.doesNotMatch(summary, /^\|/m);
   assert.doesNotMatch(summary, /[{}]/);
 });
 

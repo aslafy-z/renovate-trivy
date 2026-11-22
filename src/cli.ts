@@ -102,7 +102,7 @@ async function doLookup(v: Record<string, any>): Promise<string> {
       }
       const report = await lookup({ ...renovate, repoDir: dir, reportPath: join(work, `report-${id}.json`) });
       const [t] = targetsFromReport(report as any, { localRepository: job.repository, skipRegistries: v["skip-registry"] });
-      targets.repositories.push({ ok: true, ...t });
+      targets.repositories.push({ ok: true, ...t, ...(job.dir ? {} : { url: `${base}/${job.repository}` }) });
       log(`${job.repository}: ${t.images.length} images, ${t.images.reduce((s, i) => s + i.updates.length, 0)} proposed updates`);
     } catch (err) {
       const stderr = (err as { stderr?: string }).stderr;
@@ -119,6 +119,16 @@ async function doLookup(v: Record<string, any>): Promise<string> {
   // repository extending a preset that does not exist yet is waiting for.
   if (!targets.repositories.some((r) => r.ok)) log("warning: no repository could be looked up");
   return out;
+}
+
+/** Where a branch's pull request lives, for the hosts whose URL scheme is known. */
+function prLinker(repoUrl?: string): ((branch: string) => string | undefined) | undefined {
+  if (!repoUrl) return undefined;
+  const host = new URL(repoUrl).host;
+  // GitHub redirects /pull/<branch> to that branch's pull request.
+  if (host.includes("github")) return (b) => `${repoUrl}/pull/${b.split("/").map(encodeURIComponent).join("/")}`;
+  if (host.includes("gitlab")) return (b) => `${repoUrl}/-/merge_requests?scope=all&state=opened&source_branch=${encodeURIComponent(b)}`;
+  return undefined;
 }
 
 async function doScan(v: Record<string, any>, targetsFile?: string): Promise<string> {
@@ -172,7 +182,7 @@ async function doScan(v: Record<string, any>, targetsFile?: string): Promise<str
     const reportUrl = v["web-url"] ? `${v["web-url"]}/repos/${t.repository}/report.md` : undefined;
     writeFileSync(join(dir, "rules.json"), `${JSON.stringify({ packageRules: rules }, null, 2)}\n`);
     writeFileSync(join(dir, "report.md"), renderReport(analysis, meta));
-    if (!v["no-dashboard-report"]) writeFileSync(join(dir, "summary.md"), renderSummary(analysis, meta, reportUrl));
+    if (!v["no-dashboard-report"]) writeFileSync(join(dir, "summary.md"), renderSummary(analysis, meta, { reportUrl, prUrl: prLinker(t.url) }));
     writeFileSync(join(dir, "state.json"), `${JSON.stringify({ ...meta, sboms }, null, 2)}\n`);
     log(`${t.repository}: ${analysis.updates.filter((u) => u.diff.fixedGate).length} updates fix critical/high CVEs, ${rules.length} rules, ${analysis.errors.length} references not scanned`);
   }
