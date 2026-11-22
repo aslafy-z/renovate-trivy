@@ -164,6 +164,9 @@ branch) are sent to git as an HTTP header. Then extend
   below Renovate's own content: the totals, the pending updates that fix
   CVEs (each linked to its pull request) and the exposed images nothing
   fixes yet. Renovate writes it itself. `dashboard-report: false` keeps it out.
+  Renovate has one footer slot and the preset takes it: whatever your
+  Renovate put there is replaced. The hosted app uses it for its "run again"
+  checkbox, which the example workflow puts back through `dashboard-footer`.
 - **On the data branch**: `repos/<repo>/report.md`, with every image ranked by
   critical/high count, its best available update, the CVE list, and anything
   that could not be scanned.

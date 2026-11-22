@@ -35,6 +35,9 @@ inputs:
   dashboard-report:
     description: "`scan`: add a CVE summary at the bottom of each Dependency Dashboard."
     default: "true"
+  dashboard-footer:
+    description: "`publish`: Markdown appended to the dashboard footer. The preset's footer replaces Renovate's own, so put back here what yours had (the hosted app's run-again checkbox, see the README)."
+    default: ""
   renovate-version:
     description: "`lookup`: Renovate npm version. Defaults to the version pinned in this action."
     default: ""
@@ -97,7 +100,10 @@ runs:
         DATA_REPOSITORY: ${{ inputs.data-repository }}
         DATA_BRANCH: ${{ inputs.data-branch }}
         RENOVATE_TRIVY_DATA_TOKEN: ${{ inputs.data-token }}
+        DASHBOARD_FOOTER: ${{ inputs.dashboard-footer }}
       run: |
-        node src/cli.ts publish --delta "$RUNNER_TEMP/renovate-trivy/delta" --branch "$DATA_BRANCH" \
+        args=()
+        [ -z "$DASHBOARD_FOOTER" ] || args+=(--dashboard-footer "$DASHBOARD_FOOTER")
+        node src/cli.ts publish "${args[@]}" --delta "$RUNNER_TEMP/renovate-trivy/delta" --branch "$DATA_BRANCH" \
           --remote "$GITHUB_SERVER_URL/$DATA_REPOSITORY.git" \
           --web-url "$GITHUB_SERVER_URL/$DATA_REPOSITORY/blob/$DATA_BRANCH"

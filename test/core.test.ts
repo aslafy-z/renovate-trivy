@@ -145,6 +145,8 @@ test("dashboard summaries are embedded within a budget, then degrade to links", 
   const header = (buildPreset(new Map(), summaries, { webUrl: "https://h/d", summaryBudget: 5400 }) as any)["renovate-trivy.json"].dependencyDashboardFooter as string;
   assert.match(header, /\{\{#if \(equals \(lowercase repository\) "o\/small"\)\}\}S{100}\{\{\/if\}\}/);
   assert.match(header, /B{5000}/);
+  const withFooter = (buildPreset(new Map(), summaries, { dashboardFooter: "KEEP ME" }) as any)["renovate-trivy.json"].dependencyDashboardFooter as string;
+  assert.ok(withFooter.endsWith("{{/if}}\n\nKEEP ME"));
   assert.doesNotMatch(header, /HHH/);
   assert.match(header, /"o\/huge"\)\}\}🛡️ \[Container image vulnerability report\]\(https:\/\/h\/d\/repos\/o\/huge\/report\.md\)/);
 });

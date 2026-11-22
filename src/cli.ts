@@ -57,6 +57,8 @@ publish options:
   --remote <url>            git URL of the data repository (required)
   --branch <name>           default: data
   --web-url <url>           as above
+  --dashboard-footer <md>   appended to the dashboard footer, which the preset replaces
+                            (e.g. the hosted app's "run again" checkbox)
   token: $RENOVATE_TRIVY_DATA_TOKEN, sent to git as a basic-auth header
 `;
 
@@ -207,6 +209,7 @@ async function doPublish(v: Record<string, any>, delta?: string): Promise<void> 
     remote: v.remote,
     branch: v.branch ?? "data",
     webUrl: v["web-url"],
+    dashboardFooter: v["dashboard-footer"],
     token: process.env.RENOVATE_TRIVY_DATA_TOKEN,
     log,
   });
@@ -222,7 +225,7 @@ const { values, positionals } = parseArgs({
     label: { type: "string" }, "pr-priority": { type: "string" }, "no-release": { type: "boolean" },
     "no-dashboard-report": { type: "boolean" }, "sbom-max-age": { type: "string" }, concurrency: { type: "string" },
     "renovate-version": { type: "string" }, "renovate-bin": { type: "string" }, trivy: { type: "string" },
-    delta: { type: "string" }, remote: { type: "string" }, branch: { type: "string" },
+    "dashboard-footer": { type: "string" }, delta: { type: "string" }, remote: { type: "string" }, branch: { type: "string" },
   },
 });
 
